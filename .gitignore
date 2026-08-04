@@ -1,0 +1,4 @@
+.test-supergateway/
+macos-app/.build/
+.DS_Store
+*.xcuserstate

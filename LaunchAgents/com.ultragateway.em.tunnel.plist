@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ultragateway.em.tunnel</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__TUNNEL_SCRIPT__</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+
+	<key>WorkingDirectory</key>
+	<string>__SUPPORT_DIR__</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>ULTRAGATEWAY_CONFIG</key>
+		<string>__CONFIG_FILE__</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/tunnel-stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/tunnel-stderr.log</string>
+</dict>
+</plist>

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# CLI fallback when the menu bar binary is missing (e.g. before install.sh build).
+# Opening ultragateway.app uses ultragateway-menubar directly via Info.plist CFBundleExecutable.
+set -euo pipefail
+
+APP_BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MENU_BAR="${APP_BIN_DIR}/ultragateway-menubar"
+APP_SUPPORT="${HOME}/Library/Application Support/ultragateway"
+RUN_SCRIPT="${APP_SUPPORT}/run-gateway.sh"
+
+if [[ -x "$MENU_BAR" ]]; then
+  exec "$MENU_BAR" "$@"
+fi
+
+if [[ ! -x "$RUN_SCRIPT" ]]; then
+  osascript -e "display alert \"ultragateway Not Installed\" message \"Run install.sh from the ultragateway repo first.\"" 2>/dev/null || true
+  exit 1
+fi
+
+exec "$RUN_SCRIPT" "$@"
