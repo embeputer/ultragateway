@@ -1,3 +1,4 @@
+.native-mcp/node_modules/
 .test-supergateway/
 macos-app/.build/
 .DS_Store

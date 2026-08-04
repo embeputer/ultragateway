@@ -11,11 +11,14 @@ SUPPORT_DIR="${HOME}/Library/Application Support/ultragateway"
 LOG_DIR="${HOME}/Library/Logs/ultragateway"
 GATEWAY_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.plist"
 TUNNEL_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.tunnel.plist"
+UPDATE_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.update.plist"
 GATEWAY_LABEL="com.ultragateway.em"
 TUNNEL_LABEL="com.ultragateway.em.tunnel"
+UPDATE_LABEL="com.ultragateway.em.update"
 
 LEGACY_GATEWAY_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.cua.plist"
 LEGACY_TUNNEL_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.tunnel.plist"
+LEGACY_UPDATE_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.update.plist"
 LEGACY_MENUBAR_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.menubar.plist"
 LEGACY_GATEWAY_LABEL="com.ultragateway.cua"
 LEGACY_TUNNEL_LABEL="com.ultragateway.tunnel"
@@ -164,6 +167,14 @@ install -m 755 "${REPO_ROOT}/scripts/run-gateway.sh" "${SUPPORT_DIR}/run-gateway
 install -m 755 "${REPO_ROOT}/scripts/run-tunnel.sh" "${SUPPORT_DIR}/run-tunnel.sh"
 install -m 755 "${REPO_ROOT}/scripts/restart-launchagent.sh" "${SUPPORT_DIR}/restart-launchagent.sh"
 install -m 755 "${REPO_ROOT}/scripts/patch-supergateway-sse.js" "${SUPPORT_DIR}/patch-supergateway-sse.js"
+install -m 755 "${REPO_ROOT}/scripts/auto-update.sh" "${SUPPORT_DIR}/auto-update.sh"
+
+info "Installing native MCP server (shell + notifications)..."
+rm -rf "${SUPPORT_DIR}/native-mcp"
+mkdir -p "${SUPPORT_DIR}/native-mcp"
+cp "${REPO_ROOT}/native-mcp/package.json" "${SUPPORT_DIR}/native-mcp/"
+cp "${REPO_ROOT}/native-mcp/composite-server.mjs" "${SUPPORT_DIR}/native-mcp/"
+npm install --prefix "${SUPPORT_DIR}/native-mcp" --no-save --no-package-lock
 
 cat > "${SUPPORT_DIR}/launchagent-labels.env" <<EOF
 GATEWAY_LABEL=${GATEWAY_LABEL}
@@ -179,6 +190,13 @@ else
   info "Keeping existing config: ${SUPPORT_DIR}/config.env"
   migrate_config_env
 fi
+
+# shellcheck disable=SC1090
+source "${SUPPORT_DIR}/config.env" 2>/dev/null || true
+cat > "${SUPPORT_DIR}/repo.env" <<EOF
+ULTRAGATEWAY_REPO_DIR=${REPO_ROOT}
+GITHUB_REPO_URL=${GITHUB_REPO_URL:-https://github.com/embeputer/ultragateway.git}
+EOF
 
 if command -v swift >/dev/null 2>&1; then
   info "Building menu bar app..."
@@ -275,7 +293,6 @@ install_launch_agent() {
   local template="$1"
   local dest="$2"
   local label="$3"
-  local run_script="$4"
 
   info "Installing LaunchAgent: ${dest}"
   sed \
@@ -283,6 +300,8 @@ install_launch_agent() {
     -e "s|__SUPPORT_DIR__|${SUPPORT_DIR}|g" \
     -e "s|__RUN_SCRIPT__|${SUPPORT_DIR}/run-gateway.sh|g" \
     -e "s|__TUNNEL_SCRIPT__|${SUPPORT_DIR}/run-tunnel.sh|g" \
+    -e "s|__UPDATE_SCRIPT__|${SUPPORT_DIR}/auto-update.sh|g" \
+    -e "s|__UPDATE_INTERVAL__|${AUTO_UPDATE_INTERVAL:-21600}|g" \
     -e "s|__CONFIG_FILE__|${SUPPORT_DIR}/config.env|g" \
     -e "s|__LOG_DIR__|${LOG_DIR}|g" \
     -e "s|__PATH__|${LAUNCHD_PATH}|g" \
@@ -296,14 +315,25 @@ migrate_launch_agents
 install_launch_agent \
   "${REPO_ROOT}/LaunchAgents/com.ultragateway.em.plist" \
   "$GATEWAY_AGENT" \
-  "$GATEWAY_LABEL" \
-  "${SUPPORT_DIR}/run-gateway.sh"
+  "$GATEWAY_LABEL"
 
 install_launch_agent \
   "${REPO_ROOT}/LaunchAgents/com.ultragateway.em.tunnel.plist" \
   "$TUNNEL_AGENT" \
-  "$TUNNEL_LABEL" \
-  "${SUPPORT_DIR}/run-tunnel.sh"
+  "$TUNNEL_LABEL"
+
+# shellcheck disable=SC1090
+source "${SUPPORT_DIR}/config.env" 2>/dev/null || true
+if [[ "${AUTO_UPDATE_ENABLED:-1}" != "0" ]]; then
+  install_launch_agent \
+    "${REPO_ROOT}/LaunchAgents/com.ultragateway.em.update.plist" \
+    "$UPDATE_AGENT" \
+    "$UPDATE_LABEL"
+else
+  info "Auto-update disabled — skipping ${UPDATE_AGENT}"
+  launchctl bootout "gui/$(id -u)/${UPDATE_LABEL}" 2>/dev/null || true
+  rm -f "$UPDATE_AGENT"
+fi
 
 info "Registering hidden login item for ${APP_BUNDLE}..."
 remove_login_item "$LEGACY_APP_NAME"

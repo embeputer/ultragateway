@@ -85,11 +85,35 @@ ensure_supergateway() {
 
 ensure_supergateway
 
+NATIVE_MCP_DIR="${SUPPORT_DIR}/native-mcp"
+NATIVE_MCP_SERVER="${NATIVE_MCP_DIR}/composite-server.mjs"
+
+ensure_native_mcp() {
+  if [[ ! -f "$NATIVE_MCP_SERVER" ]]; then
+    log "ERROR: native MCP server not found at ${NATIVE_MCP_SERVER}"
+    log "Re-run install.sh from the ultragateway repo."
+    exit 1
+  fi
+  if [[ ! -f "${NATIVE_MCP_DIR}/node_modules/@modelcontextprotocol/sdk/package.json" ]]; then
+    log "Installing native-mcp dependencies to ${NATIVE_MCP_DIR}"
+    npm install --prefix "$NATIVE_MCP_DIR" --no-save --no-package-lock
+  fi
+}
+
+ensure_native_mcp
+
+export ULTRAGATEWAY_SUPPORT_DIR="$SUPPORT_DIR"
+export CUA_DRIVER_BIN
+export NATIVE_SHELL_ENABLED="${NATIVE_SHELL_ENABLED:-1}"
+export NATIVE_SHELL_TIMEOUT="${NATIVE_SHELL_TIMEOUT:-30}"
+export NATIVE_SHELL_TIMEOUT_MAX="${NATIVE_SHELL_TIMEOUT_MAX:-300}"
+export NATIVE_NOTIFY_ENABLED="${NATIVE_NOTIFY_ENABLED:-1}"
+
 log "Starting Supergateway on port ${SUPERGATEWAY_PORT} (${SUPERGATEWAY_OUTPUT_TRANSPORT})"
-log "CUA MCP command: ${CUA_DRIVER_BIN} mcp"
+log "Composite MCP: cua-driver + ultragateway native tools (run_zsh, notify)"
 
 exec "$SUPERGATEWAY_BIN" \
-  --stdio "${CUA_DRIVER_BIN} mcp" \
+  --stdio "node ${NATIVE_MCP_SERVER}" \
   --port "${SUPERGATEWAY_PORT}" \
   --outputTransport "${SUPERGATEWAY_OUTPUT_TRANSPORT}" \
   --logLevel "${SUPERGATEWAY_LOG_LEVEL}"

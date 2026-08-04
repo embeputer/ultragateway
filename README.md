@@ -112,6 +112,50 @@ Manual build:
 ./install.sh   # copies updated app bundle
 ```
 
+## Native MCP tools
+
+The gateway runs a **composite MCP server** (`native-mcp/composite-server.mjs`) that proxies **cua-driver** tools and adds ultragateway-native tools:
+
+| Tool | Description |
+|------|-------------|
+| `ultragateway_run_zsh` | Run a command in **zsh** on your Mac (stdout/stderr/exit code) |
+| `ultragateway_notify` | Show a **macOS notification** branded as ultragateway |
+
+Notifications are delivered through the **menu bar app** (Notification Center with the ultragateway icon). If the menu bar app is not running, a system notification fallback is used.
+
+Configure in `config.env`:
+
+```bash
+NATIVE_SHELL_ENABLED=1          # set 0 to disable shell tool
+NATIVE_SHELL_TIMEOUT=30         # default timeout (seconds)
+NATIVE_SHELL_TIMEOUT_MAX=300    # hard cap
+NATIVE_NOTIFY_ENABLED=1         # set 0 to disable notify tool
+```
+
+**Security:** `ultragateway_run_zsh` executes arbitrary shell commands on your machine. Only connect trusted remote agents (Poke, etc.) to your tunnel URL.
+
+## Auto-updates
+
+When enabled, LaunchAgent `com.ultragateway.em.update` checks GitHub every **6 hours** (configurable) and runs `install.sh` if `main` has new commits.
+
+```bash
+AUTO_UPDATE_ENABLED=1
+AUTO_UPDATE_INTERVAL=21600    # seconds (6h)
+AUTO_UPDATE_BRANCH=main
+GITHUB_REPO_URL=https://github.com/embeputer/ultragateway.git
+```
+
+`install.sh` records your clone path in `repo.env`. If you only have the app bundle, auto-update clones into `~/Library/Application Support/ultragateway/source`.
+
+Manual check: menu bar → **Check for Updates**, or:
+
+```bash
+~/Library/Application\ Support/ultragateway/auto-update.sh
+tail -f ~/Library/Logs/ultragateway/update.log
+```
+
+Set `AUTO_UPDATE_ENABLED=0` and re-run `install.sh` to disable.
+
 ## Usage
 
 ### Get Poke URL

@@ -9,8 +9,10 @@ SUPPORT_DIR="${HOME}/Library/Application Support/ultragateway"
 LOG_DIR="${HOME}/Library/Logs/ultragateway"
 GATEWAY_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.plist"
 TUNNEL_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.tunnel.plist"
+UPDATE_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.update.plist"
 GATEWAY_LABEL="com.ultragateway.em"
 TUNNEL_LABEL="com.ultragateway.em.tunnel"
+UPDATE_LABEL="com.ultragateway.em.update"
 
 LEGACY_GATEWAY_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.cua.plist"
 LEGACY_TUNNEL_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.tunnel.plist"
@@ -40,6 +42,7 @@ EOF
 }
 
 info "Stopping LaunchAgents..."
+launchctl bootout "gui/$(id -u)/${UPDATE_LABEL}" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/${TUNNEL_LABEL}" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/${GATEWAY_LABEL}" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/${LEGACY_TUNNEL_LABEL}" 2>/dev/null || true
@@ -55,7 +58,7 @@ if command -v tailscale >/dev/null 2>&1; then
   fi
 fi
 
-for agent in "$GATEWAY_AGENT" "$TUNNEL_AGENT" "$LEGACY_GATEWAY_AGENT" "$LEGACY_TUNNEL_AGENT" "$LEGACY_MENUBAR_AGENT"; do
+for agent in "$GATEWAY_AGENT" "$TUNNEL_AGENT" "$UPDATE_AGENT" "$LEGACY_GATEWAY_AGENT" "$LEGACY_TUNNEL_AGENT" "$LEGACY_MENUBAR_AGENT"; do
   if [[ -f "$agent" ]]; then
     info "Removing ${agent}"
     rm -f "$agent"

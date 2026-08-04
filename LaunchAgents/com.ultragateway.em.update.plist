@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ultragateway.em.update</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__UPDATE_SCRIPT__</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>StartInterval</key>
+	<integer>__UPDATE_INTERVAL__</integer>
+
+	<key>WorkingDirectory</key>
+	<string>__SUPPORT_DIR__</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>PATH</key>
+		<string>__PATH__</string>
+		<key>ULTRAGATEWAY_CONFIG</key>
+		<string>__CONFIG_FILE__</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>__LOG_DIR__/update-stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>__LOG_DIR__/update-stderr.log</string>
+</dict>
+</plist>

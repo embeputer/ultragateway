@@ -3,13 +3,103 @@ import AppKit
 import Combine
 import UserNotifications
 
+final class NotificationQueueWatcher {
+    private let queueFile: URL
+    private let offsetFile: URL
+    private var offset: UInt64 = 0
+    private var timer: Timer?
+
+    init(supportDir: URL) {
+        queueFile = supportDir.appendingPathComponent("notify-queue.jsonl")
+        offsetFile = supportDir.appendingPathComponent("notify-queue.offset")
+        offset = Self.readOffset(offsetFile)
+        if offset == 0, FileManager.default.fileExists(atPath: queueFile.path) {
+            offset = Self.fileSize(queueFile)
+        }
+    }
+
+    func start() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func poll() {
+        guard FileManager.default.fileExists(atPath: queueFile.path) else { return }
+
+        guard let handle = try? FileHandle(forReadingFrom: queueFile) else { return }
+        defer { try? handle.close() }
+
+        try? handle.seek(toOffset: offset)
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return }
+
+        offset += UInt64(data.count)
+        Self.writeOffset(offset, to: offsetFile)
+
+        let text = String(data: data, encoding: .utf8) ?? ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let json = try? JSONSerialization.jsonObject(with: Data(String(line).utf8)) as? [String: Any] else {
+                continue
+            }
+            let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ultragateway"
+            let body = (json["body"] as? String) ?? (json["message"] as? String) ?? ""
+            let subtitle = (json["subtitle"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let id = (json["id"] as? String) ?? UUID().uuidString
+
+            let content = UNMutableNotificationContent()
+            content.title = title.isEmpty ? "ultragateway" : title
+            if !subtitle.isEmpty {
+                content.subtitle = subtitle
+            }
+            content.body = body
+            content.sound = .default
+
+            let request = UNNotificationRequest(
+                identifier: "ultragateway.notify.\(id)",
+                content: content,
+                trigger: nil
+            )
+            UNUserNotificationCenter.current().add(request)
+        }
+    }
+
+    private static func readOffset(_ url: URL) -> UInt64 {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let value = UInt64(text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return 0
+        }
+        return value
+    }
+
+    private static func writeOffset(_ value: UInt64, to url: URL) {
+        try? "\(value)".write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private static func fileSize(_ url: URL) -> UInt64 {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber else {
+            return 0
+        }
+        return size.uint64Value
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private let monitor = GatewayMonitor()
+    private var notificationWatcher: NotificationQueueWatcher?
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        notificationWatcher = NotificationQueueWatcher(supportDir: monitor.supportDir)
+        notificationWatcher?.start()
         setupStatusItem()
         observeMonitor()
 
@@ -63,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(makeItem("Open Poke Integrations", action: #selector(openPokeIntegrations)))
         menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway)))
         menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel)))
+        menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates)))
 
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit ultragateway Menu", action: #selector(quit)))
@@ -102,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openPokeIntegrations() { monitor.openPokeIntegrations() }
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
+    @objc private func checkForUpdates() { monitor.checkForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }
 }
 
@@ -135,7 +227,7 @@ final class GatewayMonitor: ObservableObject {
     @Published var tunnelStatus: ServiceStatus = .unknown
     @Published var publicMcpURL: String?
 
-    private let supportDir: URL
+    let supportDir: URL
     private let publicURLFile: URL
     private let restartScript: URL
     private let gatewayLabel: String
@@ -197,6 +289,34 @@ final class GatewayMonitor: ObservableObject {
 
     func restartTunnel() {
         restartService(label: tunnelLabel, displayName: "Tunnel")
+    }
+
+    func checkForUpdates() {
+        let script = supportDir.appendingPathComponent("auto-update.sh")
+        guard FileManager.default.fileExists(atPath: script.path) else {
+            showRestartError(
+                title: "Update script missing",
+                body: "Run install.sh from the ultragateway repo to enable auto-updates."
+            )
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            let ok = self.runShell("\(self.shellQuote(script.path))")
+            DispatchQueue.main.async {
+                if ok {
+                    self.showRestartError(
+                        title: "Update check finished",
+                        body: "See ~/Library/Logs/ultragateway/update.log for details."
+                    )
+                } else {
+                    self.showRestartError(
+                        title: "Update check failed",
+                        body: "See ~/Library/Logs/ultragateway/update.log"
+                    )
+                }
+                self.refresh()
+            }
+        }
     }
 
     private func restartService(label: String, displayName: String) {
