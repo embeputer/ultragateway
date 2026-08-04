@@ -294,24 +294,24 @@ final class GatewayMonitor: ObservableObject {
     func checkForUpdates() {
         let script = supportDir.appendingPathComponent("auto-update.sh")
         guard FileManager.default.fileExists(atPath: script.path) else {
-            showRestartError(
-                title: "Update script missing",
-                body: "Run install.sh from the ultragateway repo to enable auto-updates."
-            )
+            postNotification(title: "ultragateway", subtitle: "Update", body: "Update script missing. Run install.sh from the ultragateway repo.")
             return
         }
+        postNotification(title: "ultragateway", subtitle: "Update", body: "Checking for updates…")
         DispatchQueue.global(qos: .utility).async {
             let ok = self.runShell("\(self.shellQuote(script.path))")
             DispatchQueue.main.async {
                 if ok {
-                    self.showRestartError(
-                        title: "Update check finished",
-                        body: "See ~/Library/Logs/ultragateway/update.log for details."
+                    self.postNotification(
+                        title: "ultragateway",
+                        subtitle: "Update",
+                        body: "Update check finished. See ~/Library/Logs/ultragateway/update.log."
                     )
                 } else {
-                    self.showRestartError(
-                        title: "Update check failed",
-                        body: "See ~/Library/Logs/ultragateway/update.log"
+                    self.postNotification(
+                        title: "ultragateway",
+                        subtitle: "Update",
+                        body: "Update check failed. See ~/Library/Logs/ultragateway/update.log."
                     )
                 }
                 self.refresh()
@@ -320,10 +320,37 @@ final class GatewayMonitor: ObservableObject {
     }
 
     private func restartService(label: String, displayName: String) {
+        postNotification(title: "ultragateway", subtitle: displayName, body: "Restarting…")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let restarted = self.performRestart(label: label, displayName: displayName)
+            Thread.sleep(forTimeInterval: 2.0)
+
+            let launchdUp = Self.launchdRunning(label: label)
+            let gatewayUp = label == self.gatewayLabel && Self.localGatewayHealthy(port: self.gatewayPort)
+            let isUp = label == self.gatewayLabel ? (launchdUp && gatewayUp) : launchdUp
+
+            DispatchQueue.main.async {
+                self.refresh()
+                if restarted && isUp {
+                    self.postNotification(title: "ultragateway", subtitle: displayName, body: "Started up.")
+                } else if restarted {
+                    self.postNotification(
+                        title: "ultragateway",
+                        subtitle: displayName,
+                        body: "Restart sent but service is not healthy yet. Check ~/Library/Logs/ultragateway/."
+                    )
+                }
+                // performRestart posts its own error notification on failure
+            }
+        }
+    }
+
+    @discardableResult
+    private func performRestart(label: String, displayName: String) -> Bool {
         if FileManager.default.fileExists(atPath: restartScript.path) {
             if runShell("\(shellQuote(restartScript.path)) \(shellQuote(label))") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refresh() }
-                return
+                return true
             }
         }
 
@@ -334,31 +361,30 @@ final class GatewayMonitor: ObservableObject {
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
 
         if runShell("launchctl kickstart -k \(shellQuote(target))") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refresh() }
-            return
+            return true
         }
 
         guard FileManager.default.fileExists(atPath: plist.path) else {
-            showRestartError(
-                title: "\(displayName) agent missing",
-                body: "LaunchAgent plist not found at \(plist.path). Run install.sh from the ultragateway repo."
+            postNotification(
+                title: "ultragateway",
+                subtitle: displayName,
+                body: "Error: LaunchAgent missing. Run install.sh from the ultragateway repo."
             )
-            refresh()
-            return
+            return false
         }
 
         _ = runShell("launchctl bootout \(shellQuote(target))")
         if runShell("launchctl bootstrap \(shellQuote(domain)) \(shellQuote(plist.path))") {
             _ = runShell("launchctl kickstart -k \(shellQuote(target))")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refresh() }
-            return
+            return true
         }
 
-        showRestartError(
-            title: "Failed to restart \(displayName)",
-            body: "launchctl could not load \(label). Try running install.sh or check ~/Library/Logs/ultragateway/."
+        postNotification(
+            title: "ultragateway",
+            subtitle: displayName,
+            body: "Error: could not restart \(label). Try install.sh or check logs."
         )
-        refresh()
+        return false
     }
 
     private func runShell(_ command: String) -> Bool {
@@ -377,12 +403,16 @@ final class GatewayMonitor: ObservableObject {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private func showRestartError(title: String, body: String) {
+    private func postNotification(title: String, subtitle: String? = nil, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
+        if let subtitle, !subtitle.isEmpty {
+            content.subtitle = subtitle
+        }
         content.body = body
+        content.sound = .default
         let request = UNNotificationRequest(
-            identifier: "ultragateway.restart_error.\(UUID().uuidString)",
+            identifier: "ultragateway.ui.\(UUID().uuidString)",
             content: content,
             trigger: nil
         )
