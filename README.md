@@ -105,6 +105,18 @@ Poke needs a **stable HTTPS URL ending in `/sse`**. Tailscale Funnel gives that 
 
 Built automatically during `install.sh` when `swift` is available. Shows gateway/tunnel status, public URL, copy-to-clipboard, and restart controls.
 
+### Keep Mac awake (optional)
+
+When your Mac is used as a remote MCP host (Poke, tunnel, etc.), idle system sleep can drop the gateway. Enable **Settings → Power → Keep Mac awake** in the menu bar app, or set in `config.env`:
+
+```bash
+KEEP_AWAKE_ENABLED=true
+```
+
+This holds an IOKit `PreventUserIdleSystemSleep` assertion (same effect as `caffeinate -i`). The **display may still sleep**; only idle system sleep is prevented.
+
+**Caveat:** Closing the laptop lid may still put the Mac to sleep depending on macOS power settings — this toggle does not guarantee wakefulness on lid close.
+
 Manual build:
 
 ```bash
@@ -122,8 +134,34 @@ The gateway runs a **composite MCP server** (`native-mcp/composite-server.mjs`) 
 | `ultragateway_notify` | Show a **macOS notification** branded as ultragateway |
 | `ultragateway_share_file` | Copy a local file into an ephemeral share and return a public URL (default **10 min** expiry, **50MB** max) |
 | `ultragateway_close_shares` | Immediately revoke **all** minted share links |
+| `ultragateway_agent_cover_start` | Show DIY **agent cover** (attendant shield); Mac stays unlocked for cua-driver |
+| `ultragateway_agent_cover_stop` | Dismiss cover (optional `lock: true` to also lock the Mac) |
 
 Notifications are delivered through the **menu bar app** (Notification Center with the ultragateway icon). If the menu bar app is not running, a system notification fallback is used.
+
+### Agent cover (DIY attendant shield)
+
+This is **not** Apple Codex auth-plugin “Locked Use”. It is an attendant/cover mode owned by ultragateway:
+
+- Mac stays **actually unlocked** so cua-driver can drive apps (AX clicks still work under the shield).
+- Full-screen branded cover: “An agent is working on this Mac” — local keyboard/mouse/trackpad input **locks the Mac** and dismisses the cover.
+- Synthetic / agent-injected CGEvents are filtered so cua does not immediately lock itself.
+- Cover windows use a high window level and `sharingType = .none` when possible so screenshots are less likely to be blinded; **full-display capture may still see the shield** — prefer starting cover after grabbing context.
+- Requires the **menu bar app** (polls IPC). Needs Accessibility / Input Monitoring for the event tap.
+
+IPC (under `~/Library/Application Support/ultragateway/`):
+
+| File | Role |
+|------|------|
+| `agent-cover-cmd.jsonl` | MCP appends `{"cmd":"start"\|"stop","lock":false,"id":"…","timestamp":…}` lines |
+| `agent-cover-cmd.offset` | Menu bar consume offset (same pattern as `notify-queue`) |
+| `agent-cover-state.json` | `{"active":true\|false,"updatedAt":…}` written by the menu bar |
+
+Configure in `config.env`:
+
+```bash
+AGENT_COVER_ENABLED=true   # set false to ignore start requests (Settings toggle)
+```
 
 **Ephemeral shares:** `ultragateway_share_file` takes a `path` argument, copies the file under `~/Library/Application Support/ultragateway/shares/<token>/`, and returns a URL like `{publicBase}/share/{token}/{filename}`. Links are only minted via this MCP tool (opaque tokens — not raw filesystem paths). Public base comes from `public-base-url.txt` / `public-mcp-url.txt`, else `http://127.0.0.1:$SUPERGATEWAY_PORT`. Re-sharing the same path returns the existing URL when more than **5 minutes** remain; otherwise the old share is revoked and a new one is minted. Call `ultragateway_close_shares` to revoke every active share immediately (existing URLs start returning 404).
 
@@ -136,6 +174,7 @@ NATIVE_SHELL_TIMEOUT_MAX=300    # hard cap
 NATIVE_NOTIFY_ENABLED=1         # set 0 to disable notify tool
 SHARE_TTL_SECONDS=600           # share link lifetime (default 10 minutes)
 SHARE_MAX_BYTES=52428800        # max share size (default 50MB)
+AGENT_COVER_ENABLED=true        # DIY agent cover / attendant shield
 ```
 
 **Security:** `ultragateway_run_zsh` executes arbitrary shell commands on your machine. Only connect trusted remote agents (Poke, etc.) to your tunnel URL. Share links are unguessable but publicly fetchable once minted — treat them like temporary secrets.
@@ -152,6 +191,8 @@ API_KEY=your-generated-key
 ```
 
 When protection is off, `API_KEY` should be empty and no Bearer header is required.
+
+Re-running `./install.sh` preserves your existing `config.env` (including API key settings); it only adds missing keys from `config.env.example`.
 
 Test locally:
 

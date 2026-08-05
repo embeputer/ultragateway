@@ -43,7 +43,10 @@ const SHARE_MAX_BYTES = (() => {
 const SHARE_REUSE_MIN_REMAINING_SECONDS = 300;
 
 const NOTIFY_QUEUE = path.join(SUPPORT_DIR, "notify-queue.jsonl");
+const AGENT_COVER_CMD_QUEUE = path.join(SUPPORT_DIR, "agent-cover-cmd.jsonl");
+const AGENT_COVER_STATE = path.join(SUPPORT_DIR, "agent-cover-state.json");
 const SHARES_DIR = path.join(SUPPORT_DIR, "shares");
+const AGENT_COVER_ENABLED = process.env.AGENT_COVER_ENABLED !== "0" && process.env.AGENT_COVER_ENABLED !== "false";
 
 const EXT_CONTENT_TYPES = {
   ".png": "image/png",
@@ -134,6 +137,31 @@ const NATIVE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ultragateway_agent_cover_start",
+    description:
+      "Show the DIY agent cover (attendant shield): full-screen “An agent is working on this Mac”. The Mac stays unlocked so cua-driver can drive apps. Real human keyboard/mouse/trackpad input locks the Mac and dismisses the cover. Requires the ultragateway menu bar app. Prefer starting cover after grabbing initial screenshots/context — the shield uses a high window level and sharingType=none when possible, but full-display capture may still see it. Not Apple Codex Locked Use.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ultragateway_agent_cover_stop",
+    description:
+      "Dismiss the DIY agent cover without locking (default). Pass lock=true to also lock the Mac. Requires the ultragateway menu bar app.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lock: {
+          type: "boolean",
+          description: "If true, lock the Mac when dismissing (default false — dismiss only).",
+        },
+      },
       additionalProperties: false,
     },
   },
@@ -259,6 +287,107 @@ async function osascriptNotify(title, message, subtitle) {
 async function queueNotification(entry) {
   fs.mkdirSync(SUPPORT_DIR, { recursive: true });
   fs.appendFileSync(NOTIFY_QUEUE, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+async function queueAgentCoverCommand(entry) {
+  fs.mkdirSync(SUPPORT_DIR, { recursive: true });
+  fs.appendFileSync(AGENT_COVER_CMD_QUEUE, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+function readAgentCoverState() {
+  try {
+    if (!fs.existsSync(AGENT_COVER_STATE)) return { active: false };
+    const raw = JSON.parse(fs.readFileSync(AGENT_COVER_STATE, "utf8"));
+    return { active: Boolean(raw?.active), updatedAt: raw?.updatedAt };
+  } catch {
+    return { active: false };
+  }
+}
+
+function readConfigBool(key, defaultValue = true) {
+  const configPath = path.join(SUPPORT_DIR, "config.env");
+  try {
+    const text = fs.readFileSync(configPath, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      if (!trimmed.startsWith(`${key}=`)) continue;
+      let value = trimmed.slice(key.length + 1).trim().toLowerCase();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1).trim().toLowerCase();
+      }
+      if (["1", "true", "yes", "on"].includes(value)) return true;
+      if (["0", "false", "no", "off"].includes(value)) return false;
+    }
+  } catch {
+    // missing config — use default
+  }
+  return defaultValue;
+}
+
+async function agentCoverStart() {
+  if (!readConfigBool("AGENT_COVER_ENABLED", true) || !AGENT_COVER_ENABLED) {
+    return textResult(
+      "Agent cover is disabled (AGENT_COVER_ENABLED=false). Enable it in menu bar Settings or config.env.",
+      true,
+    );
+  }
+
+  const entry = {
+    cmd: "start",
+    id: randomUUID(),
+    timestamp: Date.now(),
+  };
+  await queueAgentCoverCommand(entry);
+
+  const hasMenubar = await menubarRunning();
+  if (!hasMenubar) {
+    return textResult(
+      `Cover start queued (id: ${entry.id}), but the ultragateway menu bar app is not running. Start ultragateway.app so the shield can appear.`,
+      true,
+    );
+  }
+
+  return textResult(
+    [
+      `Agent cover start requested (id: ${entry.id}).`,
+      "Menu bar will show the attendant shield; Mac stays unlocked for cua-driver.",
+      "Human keyboard/mouse/trackpad input will lock the Mac and dismiss the cover.",
+      "Tip: grab screenshots/context before start when possible — shield uses sharingType=none when supported.",
+    ].join("\n"),
+  );
+}
+
+async function agentCoverStop(args) {
+  const lock = Boolean(args?.lock);
+  const entry = {
+    cmd: "stop",
+    lock,
+    id: randomUUID(),
+    timestamp: Date.now(),
+  };
+  await queueAgentCoverCommand(entry);
+
+  const hasMenubar = await menubarRunning();
+  const state = readAgentCoverState();
+  if (!hasMenubar) {
+    return textResult(
+      `Cover stop queued (id: ${entry.id}, lock: ${lock}), but the menu bar app is not running.`,
+      true,
+    );
+  }
+
+  return textResult(
+    [
+      `Agent cover stop requested (id: ${entry.id}).`,
+      `lock: ${lock}`,
+      state.active ? "Cover was active according to agent-cover-state.json." : "Cover state file reports inactive (stop is still idempotent).",
+      lock ? "Mac will lock when the menu bar processes the command." : "Dismiss only — Mac will not lock.",
+    ].join("\n"),
+  );
 }
 
 async function notify(args) {
@@ -701,6 +830,12 @@ async function main() {
     }
     if (name === "ultragateway_close_shares") {
       return await closeAllShares();
+    }
+    if (name === "ultragateway_agent_cover_start") {
+      return await agentCoverStart();
+    }
+    if (name === "ultragateway_agent_cover_stop") {
+      return await agentCoverStop(args ?? {});
     }
 
     if (!cuaClient) {

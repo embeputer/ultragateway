@@ -1,8 +1,51 @@
 import SwiftUI
 import AppKit
 import Combine
+import IOKit.pwr_mgt
 import Security
 import UserNotifications
+
+// MARK: - KeepAwakeController
+
+/// Prevents idle **system** sleep while the menu bar app runs (display may still sleep).
+/// Uses IOKit `PreventUserIdleSystemSleep` — equivalent to `caffeinate -i`, not `-d`.
+final class KeepAwakeController {
+    private var assertionID: IOPMAssertionID = 0
+    private(set) var isActive = false
+
+    func setEnabled(_ enabled: Bool) {
+        if enabled {
+            startAssertion()
+        } else {
+            stopAssertion()
+        }
+    }
+
+    private func startAssertion() {
+        guard !isActive else { return }
+        let reason = "ultragateway remote MCP access" as CFString
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            reason,
+            &assertionID
+        )
+        if result == kIOReturnSuccess {
+            isActive = true
+        }
+    }
+
+    private func stopAssertion() {
+        guard isActive else { return }
+        IOPMAssertionRelease(assertionID)
+        assertionID = 0
+        isActive = false
+    }
+
+    deinit {
+        stopAssertion()
+    }
+}
 
 final class NotificationQueueWatcher {
     private let queueFile: URL
@@ -118,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     let monitor = GatewayMonitor()
     private var notificationWatcher: NotificationQueueWatcher?
+    private var agentCoverWatcher: AgentCoverCommandWatcher?
     private var cancellables = Set<AnyCancellable>()
     private var settingsWindow: NSWindow?
 
@@ -125,6 +169,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         notificationWatcher = NotificationQueueWatcher(supportDir: monitor.supportDir)
         notificationWatcher?.start()
+        agentCoverWatcher = AgentCoverCommandWatcher(
+            supportDir: monitor.supportDir,
+            isAllowed: { [weak self] in self?.monitor.agentCoverEnabled ?? true },
+            onStatusChange: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.monitor.syncAgentCoverActive()
+                    self?.statusItem?.menu = self?.buildMenu()
+                }
+            }
+        )
+        agentCoverWatcher?.start()
+        NotificationCenter.default.addObserver(
+            forName: .agentCoverDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.monitor.syncAgentCoverActive()
+            self?.statusItem?.menu = self?.buildMenu()
+        }
         setupStatusItem()
         observeMonitor()
 
@@ -135,6 +198,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         monitor.refreshNotificationStatus()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        monitor.releaseKeepAwake()
+        AgentCoverController.shared.stopCover(lock: false)
+        agentCoverWatcher?.stop()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -169,6 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addDisabledItem("ultragateway", to: menu)
         addDisabledItem("Gateway: \(monitor.gatewayStatus.label)", to: menu)
         addDisabledItem("Tunnel: \(monitor.tunnelStatus.label)", to: menu)
+        if monitor.agentCoverActive {
+            addDisabledItem("Agent cover: On", to: menu)
+        }
 
         if let url = monitor.publicMcpURL {
             addDisabledItem(url, to: menu)
@@ -300,6 +372,8 @@ struct SettingsView: View {
                     brandHero
                     statusGlass
                     apiKeyGlass
+                    keepAwakeGlass
+                    agentCoverGlass
                     if !monitor.notificationsEnabled {
                         notificationsGlass
                     }
@@ -540,6 +614,125 @@ struct SettingsView: View {
         }
     }
 
+    private var keepAwakeGlass: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Power")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.45))
+                .textCase(.uppercase)
+                .tracking(1.1)
+
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Keep Mac awake")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink)
+                    Text("Prevent idle system sleep for remote MCP access. Display may still sleep.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: Binding(
+                    get: { monitor.keepAwakeEnabled },
+                    set: { monitor.setKeepAwakeEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(accent)
+            }
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+            )
+        }
+        .padding(18)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(glassStroke(radius: 22))
+        .shadow(color: accent.opacity(0.10), radius: 16, y: 7)
+    }
+
+    private var agentCoverGlass: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Agent cover")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.45))
+                .textCase(.uppercase)
+                .tracking(1.1)
+
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: monitor.agentCoverActive ? "shield.lefthalf.filled" : "shield")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(monitor.agentCoverActive ? "Cover active" : "Allow agent cover")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink)
+                    Text("Attendant shield started by agents via MCP. Not Apple Locked Use — Mac stays unlocked until you touch the keyboard or mouse.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: Binding(
+                    get: { monitor.agentCoverEnabled },
+                    set: { monitor.setAgentCoverEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(accent)
+            }
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+            )
+
+            HStack(spacing: 10) {
+                Button {
+                    monitor.testAgentCover()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "eye")
+                        Text(monitor.agentCoverActive ? "Stop test cover" : "Test cover")
+                    }
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.75))
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(.white.opacity(0.4), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(!monitor.agentCoverEnabled && !monitor.agentCoverActive)
+            }
+        }
+        .padding(18)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(glassStroke(radius: 22))
+        .shadow(color: accent.opacity(0.10), radius: 16, y: 7)
+    }
+
     private var notificationsGlass: some View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: "bell.badge")
@@ -735,8 +928,12 @@ final class GatewayMonitor: ObservableObject {
     @Published var notificationsEnabled = true
     @Published var apiKeyProtectionEnabled = false
     @Published var apiKey: String?
+    @Published var keepAwakeEnabled = false
+    @Published var agentCoverEnabled = true
+    @Published var agentCoverActive = false
 
     let supportDir: URL
+    private let keepAwakeController = KeepAwakeController()
     private let publicURLFile: URL
     private let restartScript: URL
     private let configEnvFile: URL
@@ -755,6 +952,15 @@ final class GatewayMonitor: ObservableObject {
         gatewayLabel = labels.gateway
         tunnelLabel = labels.tunnel
         gatewayPort = Self.readGatewayPort(supportDir: supportDir)
+        let keepAwake = Self.readConfigBool(key: "KEEP_AWAKE_ENABLED", from: configEnvFile) ?? false
+        keepAwakeEnabled = keepAwake
+        keepAwakeController.setEnabled(keepAwake)
+        agentCoverEnabled = Self.readConfigBool(key: "AGENT_COVER_ENABLED", from: configEnvFile) ?? true
+        AgentCoverController.shared.configure(supportDir: supportDir)
+        apiKeyProtectionEnabled = Self.readConfigBool(key: "API_KEY_PROTECTION_ENABLED", from: configEnvFile) ?? false
+        let storedKey = Self.readConfigValue(key: "API_KEY", from: configEnvFile)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        apiKey = (storedKey?.isEmpty == false) ? storedKey : nil
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -782,6 +988,9 @@ final class GatewayMonitor: ObservableObject {
         }
 
         refreshApiKeySettings()
+        refreshKeepAwakeSettings()
+        refreshAgentCoverSettings()
+        syncAgentCoverActive()
         refreshNotificationStatus()
     }
 
@@ -800,6 +1009,9 @@ final class GatewayMonitor: ObservableObject {
     }
 
     func setApiKeyProtectionEnabled(_ enabled: Bool) {
+        let currentEnabled = Self.readConfigBool(key: "API_KEY_PROTECTION_ENABLED", from: configEnvFile) ?? false
+        guard enabled != currentEnabled else { return }
+
         if enabled {
             let existing = Self.readConfigValue(key: "API_KEY", from: configEnvFile)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -825,6 +1037,68 @@ final class GatewayMonitor: ObservableObject {
             apiKey = nil
         }
         restartGateway()
+    }
+
+    func refreshKeepAwakeSettings() {
+        let enabled = Self.readConfigBool(key: "KEEP_AWAKE_ENABLED", from: configEnvFile) ?? false
+        if keepAwakeEnabled != enabled {
+            keepAwakeEnabled = enabled
+            keepAwakeController.setEnabled(enabled)
+        } else if enabled && !keepAwakeController.isActive {
+            keepAwakeController.setEnabled(true)
+        }
+    }
+
+    func setKeepAwakeEnabled(_ enabled: Bool) {
+        Self.writeConfigValues(
+            ["KEEP_AWAKE_ENABLED": enabled ? "true" : "false"],
+            to: configEnvFile
+        )
+        keepAwakeEnabled = enabled
+        keepAwakeController.setEnabled(enabled)
+    }
+
+    func releaseKeepAwake() {
+        keepAwakeController.setEnabled(false)
+    }
+
+    func refreshAgentCoverSettings() {
+        let enabled = Self.readConfigBool(key: "AGENT_COVER_ENABLED", from: configEnvFile) ?? true
+        if agentCoverEnabled != enabled {
+            agentCoverEnabled = enabled
+            if !enabled && AgentCoverController.shared.isActive {
+                AgentCoverController.shared.stopCover(lock: false)
+            }
+        }
+    }
+
+    func setAgentCoverEnabled(_ enabled: Bool) {
+        Self.writeConfigValues(
+            ["AGENT_COVER_ENABLED": enabled ? "true" : "false"],
+            to: configEnvFile
+        )
+        agentCoverEnabled = enabled
+        if !enabled && AgentCoverController.shared.isActive {
+            AgentCoverController.shared.stopCover(lock: false)
+        }
+        syncAgentCoverActive()
+    }
+
+    func syncAgentCoverActive() {
+        let active = AgentCoverController.shared.isActive
+        if agentCoverActive != active {
+            agentCoverActive = active
+        }
+    }
+
+    func testAgentCover() {
+        if AgentCoverController.shared.isActive {
+            AgentCoverController.shared.stopCover(lock: false)
+        } else {
+            guard agentCoverEnabled else { return }
+            AgentCoverController.shared.startCover()
+        }
+        syncAgentCoverActive()
     }
 
     func regenerateApiKey() {
@@ -918,6 +1192,7 @@ final class GatewayMonitor: ObservableObject {
 
     private static func readConfigValue(key: String, from url: URL) -> String? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var last: String?
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
@@ -925,14 +1200,14 @@ final class GatewayMonitor: ObservableObject {
             var value = String(trimmed.dropFirst(key.count + 1))
             if value.count >= 2 {
                 let first = value.first!
-                let last = value.last!
-                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                let lastChar = value.last!
+                if (first == "\"" && lastChar == "\"") || (first == "'" && lastChar == "'") {
                     value = String(value.dropFirst().dropLast())
                 }
             }
-            return value
+            last = value
         }
-        return nil
+        return last
     }
 
     private static func readConfigBool(key: String, from url: URL) -> Bool? {

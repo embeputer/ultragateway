@@ -112,7 +112,12 @@ After creating the integration:
 2. Ask something that uses computer control, e.g. “What apps are running on my Mac?”
 3. If tools fail, open [poke.com integrations](https://poke.com) and check the integration status or trigger a tool re-sync
 
-Native ultragateway tools also appear alongside cua-driver tools, including `ultragateway_share_file` (ephemeral HTTPS link for a local file, default 10-minute expiry) and `ultragateway_close_shares` (revoke all active share links). Re-sync the integration after upgrading ultragateway if those tools are missing.
+Native ultragateway tools also appear alongside cua-driver tools, including `ultragateway_share_file` (ephemeral HTTPS link for a local file, default 10-minute expiry), `ultragateway_close_shares` (revoke all active share links), and DIY **agent cover** tools:
+
+- `ultragateway_agent_cover_start` — full-screen “An agent is working on this Mac” attendant shield (Mac stays unlocked for cua-driver; human input locks). Requires the menu bar app. **Not** Apple Codex Locked Use.
+- `ultragateway_agent_cover_stop` — dismiss cover (`lock: true` optional to lock as well).
+
+Re-sync the integration after upgrading ultragateway if those tools are missing.
 
 ## Troubleshooting
 

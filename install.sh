@@ -48,10 +48,140 @@ end tell
 EOF
 }
 
+# Never overwrite config.env wholesale on reinstall — only add missing keys and dedupe.
+# Security keys (API_KEY*) prefer enabled/non-empty values when duplicates exist.
+config_has_key() {
+  local config="$1" key="$2"
+  grep -Fq "${key}=" "$config" 2>/dev/null
+}
+
+update_config_key() {
+  local config="$1" key="$2" value="$3"
+  local tmp replaced=0
+  tmp="$(mktemp)"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "${key}="* ]]; then
+      if (( replaced )); then
+        continue
+      fi
+      printf '%s=%s\n' "$key" "$value"
+      replaced=1
+    else
+      printf '%s\n' "$line"
+    fi
+  done < "$config" > "$tmp"
+  if (( ! replaced )); then
+    printf '\n%s=%s\n' "$key" "$value" >> "$tmp"
+  fi
+  mv "$tmp" "$config"
+}
+
+merge_config_env_from() {
+  local src="$1" dst="$2"
+  [[ -f "$src" && -f "$dst" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    local key="${line%%=*}"
+    key="${key%%[[:space:]]*}"
+    [[ -n "$key" ]] || continue
+    local src_val="${line#*=}"
+
+    if ! config_has_key "$dst" "$key"; then
+      printf '%s\n' "$line" >> "$dst"
+      continue
+    fi
+
+    case "$key" in
+      API_KEY_PROTECTION_ENABLED)
+        local dst_val
+        dst_val="$(grep -F "${key}=" "$dst" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+        src_val="$(printf '%s' "$src_val" | tr -d '[:space:]')"
+        if [[ "$src_val" == "true" && "$dst_val" != "true" ]]; then
+          update_config_key "$dst" "$key" "true"
+        fi
+        ;;
+      API_KEY)
+        local dst_val
+        dst_val="$(grep -F "${key}=" "$dst" | tail -1 | cut -d= -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        src_val="$(printf '%s' "$src_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        if [[ -n "$src_val" && -z "$dst_val" ]]; then
+          update_config_key "$dst" "$key" "$src_val"
+        fi
+        ;;
+    esac
+  done < "$src"
+}
+
+dedupe_config_env() {
+  local config="$1"
+  [[ -f "$config" ]] || return 0
+  python3 - "$config" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    lines = f.read().splitlines()
+
+assign = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+values: dict[str, str] = {}
+
+for line in lines:
+    m = assign.match(line)
+    if not m:
+        continue
+    key, val = m.group(1), m.group(2)
+    if key == "API_KEY_PROTECTION_ENABLED":
+        truthy = {"1", "true", "yes", "on"}
+        if val.strip().lower() in truthy:
+            values[key] = val
+        elif key not in values:
+            values[key] = val
+    elif key == "API_KEY":
+        new_trim = val.strip()
+        old = values.get(key, "")
+        if len(new_trim) > len(old.strip()):
+            values[key] = val
+        elif key not in values:
+            values[key] = val
+    else:
+        values[key] = val
+
+out: list[str] = []
+seen: set[str] = set()
+for line in lines:
+    m = assign.match(line)
+    if not m:
+        out.append(line)
+        continue
+    key = m.group(1)
+    if key in seen:
+        continue
+    seen.add(key)
+    out.append(f"{key}={values[key]}")
+
+text = "\n".join(out)
+if text and not text.endswith("\n"):
+    text += "\n"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(text)
+PY
+}
+
+backup_config_env() {
+  local config="${SUPPORT_DIR}/config.env"
+  [[ -f "$config" ]] || return 0
+  cp -p "$config" "${config}.pre-install.bak"
+}
+
 migrate_config_env() {
   local config="${SUPPORT_DIR}/config.env"
   local example="${REPO_ROOT}/config.env.example"
   [[ -f "$config" && -f "$example" ]] || return 0
+
+  backup_config_env
 
   if grep -q 'UltraGateway' "$config" 2>/dev/null; then
     info "Updating config.env header (UltraGateway → ultragateway)..."
@@ -69,11 +199,13 @@ migrate_config_env() {
     local key="${line%%=*}"
     key="${key%%[[:space:]]*}"
     [[ -n "$key" ]] || continue
-    if ! grep -q "^${key}=" "$config" 2>/dev/null; then
+    if ! config_has_key "$config" "$key"; then
       printf '%s\n' "$line" >> "$config"
       added=1
     fi
   done < "$example"
+
+  dedupe_config_env "$config"
 
   if (( added )); then
     info "Added missing settings to config.env from config.env.example"
@@ -109,9 +241,15 @@ migrate_from_legacy() {
     info "Migrating Application Support from ${LEGACY_SUPPORT_DIR}..."
     mkdir -p "$SUPPORT_DIR"
 
-    if [[ ! -f "${SUPPORT_DIR}/config.env" && -f "${LEGACY_SUPPORT_DIR}/config.env" ]]; then
-      cp "${LEGACY_SUPPORT_DIR}/config.env" "${SUPPORT_DIR}/config.env"
-      info "Migrated config.env"
+    if [[ -f "${LEGACY_SUPPORT_DIR}/config.env" ]]; then
+      if [[ ! -f "${SUPPORT_DIR}/config.env" ]]; then
+        cp "${LEGACY_SUPPORT_DIR}/config.env" "${SUPPORT_DIR}/config.env"
+        info "Migrated config.env"
+      else
+        merge_config_env_from "${LEGACY_SUPPORT_DIR}/config.env" "${SUPPORT_DIR}/config.env"
+        dedupe_config_env "${SUPPORT_DIR}/config.env"
+        info "Merged legacy config.env (preserved API key settings)"
+      fi
     fi
 
     for state_file in public-mcp-url.txt public-base-url.txt; do
@@ -184,10 +322,20 @@ TUNNEL_LABEL=${TUNNEL_LABEL}
 EOF
 
 if [[ ! -f "${SUPPORT_DIR}/config.env" ]]; then
-  info "Creating default config at ${SUPPORT_DIR}/config.env"
-  install -m 644 "${REPO_ROOT}/config.env.example" "${SUPPORT_DIR}/config.env"
-  sed -i '' "s|/Users/ember|${HOME}|g" "${SUPPORT_DIR}/config.env" 2>/dev/null || \
-    sed -i "s|/Users/ember|${HOME}|g" "${SUPPORT_DIR}/config.env"
+  if [[ -f "${LEGACY_SUPPORT_DIR}/config.env" ]] && ! same_path "$LEGACY_SUPPORT_DIR" "$SUPPORT_DIR"; then
+    info "Creating config from legacy ${LEGACY_SUPPORT_DIR}/config.env"
+    cp "${LEGACY_SUPPORT_DIR}/config.env" "${SUPPORT_DIR}/config.env"
+    migrate_config_env
+  elif [[ -f "${SUPPORT_DIR}/config.env.pre-install.bak" ]]; then
+    info "Restoring config from previous install backup"
+    cp "${SUPPORT_DIR}/config.env.pre-install.bak" "${SUPPORT_DIR}/config.env"
+    migrate_config_env
+  else
+    info "Creating default config at ${SUPPORT_DIR}/config.env"
+    install -m 644 "${REPO_ROOT}/config.env.example" "${SUPPORT_DIR}/config.env"
+    sed -i '' "s|/Users/ember|${HOME}|g" "${SUPPORT_DIR}/config.env" 2>/dev/null || \
+      sed -i "s|/Users/ember|${HOME}|g" "${SUPPORT_DIR}/config.env"
+  fi
 else
   info "Keeping existing config: ${SUPPORT_DIR}/config.env"
   migrate_config_env
