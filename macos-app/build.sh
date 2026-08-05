@@ -10,6 +10,7 @@ MACOS_DIR="${APP_BUNDLE}/Contents/MacOS"
 RESOURCES_DIR="${APP_BUNDLE}/Contents/Resources"
 
 info() { printf '==> %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 command -v swift >/dev/null 2>&1 || die "swift not found (install Xcode Command Line Tools)"

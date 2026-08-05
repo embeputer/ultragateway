@@ -7,6 +7,7 @@ final class NotificationQueueWatcher {
     private let queueFile: URL
     private let offsetFile: URL
     private var offset: UInt64 = 0
+    private var partialLine = Data()
     private var timer: Timer?
 
     init(supportDir: URL) {
@@ -32,40 +33,63 @@ final class NotificationQueueWatcher {
     private func poll() {
         guard FileManager.default.fileExists(atPath: queueFile.path) else { return }
 
+        let fileSize = Self.fileSize(queueFile)
+        if offset > fileSize {
+            offset = 0
+            partialLine = Data()
+        }
+
         guard let handle = try? FileHandle(forReadingFrom: queueFile) else { return }
         defer { try? handle.close() }
 
-        try? handle.seek(toOffset: offset)
-        guard let data = try? handle.readToEnd(), !data.isEmpty else { return }
+        let priorPartialCount = partialLine.count
+        try? handle.seek(toOffset: offset + UInt64(priorPartialCount))
+        let newData = (try? handle.readToEnd()) ?? Data()
+        guard !newData.isEmpty || priorPartialCount > 0 else { return }
 
-        offset += UInt64(data.count)
-        Self.writeOffset(offset, to: offsetFile)
+        var buffer = partialLine
+        buffer.append(newData)
+        partialLine = Data()
 
-        let text = String(data: data, encoding: .utf8) ?? ""
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let json = try? JSONSerialization.jsonObject(with: Data(String(line).utf8)) as? [String: Any] else {
-                continue
-            }
-            let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ultragateway"
-            let body = (json["body"] as? String) ?? (json["message"] as? String) ?? ""
-            let subtitle = (json["subtitle"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let id = (json["id"] as? String) ?? UUID().uuidString
-
-            let content = UNMutableNotificationContent()
-            content.title = title.isEmpty ? "ultragateway" : title
-            if !subtitle.isEmpty {
-                content.subtitle = subtitle
-            }
-            content.body = body
-            content.sound = .default
-
-            let request = UNNotificationRequest(
-                identifier: "ultragateway.notify.\(id)",
-                content: content,
-                trigger: nil
-            )
-            UNUserNotificationCenter.current().add(request)
+        while let newlineIndex = buffer.firstIndex(of: 0x0A) {
+            let lineData = buffer[..<newlineIndex]
+            buffer = buffer[(newlineIndex + 1)...]
+            deliverNotification(from: Data(lineData))
         }
+
+        if !buffer.isEmpty {
+            partialLine = buffer
+        }
+
+        let consumedBytes = priorPartialCount + newData.count - partialLine.count
+        offset += UInt64(consumedBytes)
+        Self.writeOffset(offset, to: offsetFile)
+    }
+
+    private func deliverNotification(from lineData: Data) {
+        guard !lineData.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+            return
+        }
+        let title = (json["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ultragateway"
+        let body = (json["body"] as? String) ?? (json["message"] as? String) ?? ""
+        let subtitle = (json["subtitle"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let id = (json["id"] as? String) ?? UUID().uuidString
+
+        let content = UNMutableNotificationContent()
+        content.title = title.isEmpty ? "ultragateway" : title
+        if !subtitle.isEmpty {
+            content.subtitle = subtitle
+        }
+        content.body = body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "ultragateway.notify.\(id)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     private static func readOffset(_ url: URL) -> UInt64 {
@@ -367,11 +391,7 @@ final class GatewayMonitor: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async {
             let restarted = self.performRestart(label: label, displayName: displayName)
-            Thread.sleep(forTimeInterval: 2.0)
-
-            let launchdUp = Self.launchdRunning(label: label)
-            let gatewayUp = label == self.gatewayLabel && Self.localGatewayHealthy(port: self.gatewayPort)
-            let isUp = label == self.gatewayLabel ? (launchdUp && gatewayUp) : launchdUp
+            let isUp = self.waitForServiceHealthy(label: label)
 
             DispatchQueue.main.async {
                 self.refresh()
@@ -387,6 +407,27 @@ final class GatewayMonitor: ObservableObject {
                 // performRestart posts its own error notification on failure
             }
         }
+    }
+
+    private func waitForServiceHealthy(label: String) -> Bool {
+        var delay: TimeInterval = 2.0
+        let maxDelay: TimeInterval = 15.0
+        let deadline = Date().addingTimeInterval(120.0)
+
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: delay)
+
+            let launchdUp = Self.launchdRunning(label: label)
+            let gatewayUp = label == self.gatewayLabel && Self.localGatewayHealthy(port: self.gatewayPort)
+            let isUp = label == self.gatewayLabel ? (launchdUp && gatewayUp) : launchdUp
+            if isUp {
+                return true
+            }
+
+            delay = min(delay * 1.5, maxDelay)
+        }
+
+        return false
     }
 
     @discardableResult

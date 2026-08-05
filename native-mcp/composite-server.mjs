@@ -256,6 +256,13 @@ async function connectCuaClient() {
     stderr: "pipe",
   });
 
+  // Drain stderr so the child never blocks once the pipe buffer fills (~8KB).
+  // Attach before connect() so early startup output is not lost.
+  transport.stderr?.on("data", (chunk) => {
+    const text = chunk.toString().trimEnd();
+    if (text) log(`[cua-driver] ${text}`);
+  });
+
   const client = new Client(
     { name: "ultragateway-cua-proxy", version: "1.0.0" },
     { capabilities: {} },

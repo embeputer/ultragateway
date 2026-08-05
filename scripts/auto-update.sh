@@ -25,7 +25,25 @@ queue_notify() {
   local title="${2:-ultragateway}"
   local queue="${SUPPORT_DIR}/notify-queue.jsonl"
   mkdir -p "$SUPPORT_DIR"
-  printf '%s\n' "{\"id\":\"$(uuidgen)\",\"title\":\"${title}\",\"body\":\"${message}\",\"subtitle\":\"Update\",\"timestamp\":$(date +%s)}" >> "$queue"
+  NOTIFY_ID="$(uuidgen)" \
+  NOTIFY_TITLE="$title" \
+  NOTIFY_BODY="$message" \
+  NOTIFY_TIMESTAMP="$(date +%s)" \
+  python3 -c '
+import json, os
+
+print(
+    json.dumps(
+        {
+            "id": os.environ["NOTIFY_ID"],
+            "title": os.environ["NOTIFY_TITLE"],
+            "body": os.environ["NOTIFY_BODY"],
+            "subtitle": "Update",
+            "timestamp": int(os.environ["NOTIFY_TIMESTAMP"]),
+        }
+    )
+)
+' >> "$queue"
 }
 
 if [[ "$AUTO_UPDATE_ENABLED" == "0" ]]; then
