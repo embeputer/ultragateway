@@ -18,6 +18,8 @@ source "${ULTRAGATEWAY_CONFIG:-${SUPPORT_DIR}/config.env}" 2>/dev/null || true
 : "${SUPERGATEWAY_VERSION:=3.4.3}"
 : "${API_KEY_PROTECTION_ENABLED:=false}"
 : "${API_KEY:=}"
+: "${SHARE_TTL_SECONDS:=600}"
+: "${SHARE_MAX_BYTES:=52428800}"
 
 export PATH="${PATH:-/usr/bin:/bin}"
 
@@ -145,6 +147,27 @@ start_supergateway() {
     --port "$port"
 }
 
+GATEWAY_PROXY="${SCRIPT_DIR}/api-key-proxy.mjs"
+if [[ ! -f "$GATEWAY_PROXY" ]]; then
+  log "ERROR: api-key-proxy.mjs not found at ${GATEWAY_PROXY}"
+  log "Re-run install.sh from the ultragateway repo to update scripts."
+  exit 1
+fi
+
+SHARE_HANDLER="${SCRIPT_DIR}/share-handler.mjs"
+if [[ ! -f "$SHARE_HANDLER" ]]; then
+  log "ERROR: share-handler.mjs not found at ${SHARE_HANDLER}"
+  log "Re-run install.sh from the ultragateway repo to update scripts."
+  exit 1
+fi
+
+INTERNAL_PORT="${SUPERGATEWAY_INTERNAL_PORT:-$((SUPERGATEWAY_PORT + 10000))}"
+PROXY_ARGS=(
+  --listen "$SUPERGATEWAY_PORT"
+  --upstream "$INTERNAL_PORT"
+  --support-dir "$SUPPORT_DIR"
+)
+
 if api_key_protection_enabled; then
   trimmed_api_key="${API_KEY#"${API_KEY%%[![:space:]]*}"}"
   trimmed_api_key="${trimmed_api_key%"${trimmed_api_key##*[![:space:]]}"}"
@@ -153,41 +176,27 @@ if api_key_protection_enabled; then
     log "Enable protection in the menu bar Settings UI or set API_KEY in config.env"
     exit 1
   fi
-
-  API_KEY_PROXY="${SCRIPT_DIR}/api-key-proxy.mjs"
-  if [[ ! -f "$API_KEY_PROXY" ]]; then
-    log "ERROR: api-key-proxy.mjs not found at ${API_KEY_PROXY}"
-    log "Re-run install.sh from the ultragateway repo to update scripts."
-    exit 1
-  fi
-
-  INTERNAL_PORT="${SUPERGATEWAY_INTERNAL_PORT:-$((SUPERGATEWAY_PORT + 10000))}"
+  PROXY_ARGS+=(--api-key "$trimmed_api_key")
   log "API key protection enabled"
-  log "Supergateway internal port ${INTERNAL_PORT}; public proxy on ${SUPERGATEWAY_PORT} (${SUPERGATEWAY_OUTPUT_TRANSPORT})"
-  log "Composite MCP: cua-driver + ultragateway native tools (run_zsh, notify)"
-
-  start_supergateway "$INTERNAL_PORT" &
-  SUPERGATEWAY_PID=$!
-  cleanup() {
-    kill "$SUPERGATEWAY_PID" 2>/dev/null || true
-    wait "$SUPERGATEWAY_PID" 2>/dev/null || true
-  }
-  trap cleanup EXIT INT TERM
-
-  if ! wait_for_port "$INTERNAL_PORT"; then
-    log "ERROR: Supergateway did not start on internal port ${INTERNAL_PORT}"
-    exit 1
-  fi
-
-  exec node "$API_KEY_PROXY" \
-    --listen "$SUPERGATEWAY_PORT" \
-    --upstream "$INTERNAL_PORT" \
-    --api-key "$trimmed_api_key"
 else
-  log "Starting Supergateway on port ${SUPERGATEWAY_PORT} (${SUPERGATEWAY_OUTPUT_TRANSPORT})"
-  log "Composite MCP: cua-driver + ultragateway native tools (run_zsh, notify)"
-
-  exec "$SUPERGATEWAY_BIN" \
-    "${SUPERGATEWAY_ARGS[@]}" \
-    --port "${SUPERGATEWAY_PORT}"
+  log "API key protection disabled (MCP routes are public; /share routes are always public)"
 fi
+
+log "Supergateway internal port ${INTERNAL_PORT}; public gateway on ${SUPERGATEWAY_PORT} (${SUPERGATEWAY_OUTPUT_TRANSPORT})"
+log "Composite MCP: cua-driver + ultragateway native tools (run_zsh, notify)"
+log "Ephemeral shares: GET /share/{token} (TTL ${SHARE_TTL_SECONDS}s, max ${SHARE_MAX_BYTES} bytes at mint)"
+
+start_supergateway "$INTERNAL_PORT" &
+SUPERGATEWAY_PID=$!
+cleanup() {
+  kill "$SUPERGATEWAY_PID" 2>/dev/null || true
+  wait "$SUPERGATEWAY_PID" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+if ! wait_for_port "$INTERNAL_PORT"; then
+  log "ERROR: Supergateway did not start on internal port ${INTERNAL_PORT}"
+  exit 1
+fi
+
+exec node "$GATEWAY_PROXY" "${PROXY_ARGS[@]}"

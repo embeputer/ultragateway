@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -31,7 +31,37 @@ const SHELL_TIMEOUT_DEFAULT = Number(process.env.NATIVE_SHELL_TIMEOUT || "30");
 const SHELL_TIMEOUT_MAX = Number(process.env.NATIVE_SHELL_TIMEOUT_MAX || "300");
 const NOTIFY_ENABLED = process.env.NATIVE_NOTIFY_ENABLED !== "0";
 
+const SHARE_TTL_SECONDS = (() => {
+  const n = Number(process.env.SHARE_TTL_SECONDS || "600");
+  return Number.isFinite(n) && n > 0 ? n : 600;
+})();
+const SHARE_MAX_BYTES = (() => {
+  const n = Number(process.env.SHARE_MAX_BYTES || String(50 * 1024 * 1024));
+  return Number.isFinite(n) && n > 0 ? n : 50 * 1024 * 1024;
+})();
+
 const NOTIFY_QUEUE = path.join(SUPPORT_DIR, "notify-queue.jsonl");
+const SHARES_DIR = path.join(SUPPORT_DIR, "shares");
+
+const EXT_CONTENT_TYPES = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".json": "application/json",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".csv": "text/csv",
+  ".mp4": "video/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".zip": "application/zip",
+};
 
 const NATIVE_TOOLS = [
   {
@@ -78,6 +108,21 @@ const NATIVE_TOOLS = [
         },
       },
       required: ["message"],
+    },
+  },
+  {
+    name: "ultragateway_share_file",
+    description:
+      "Copy a local file into an ephemeral share store and return a public HTTPS (or tunnel) URL others can open/download. Links expire after a short TTL (default 10 minutes). Max size 50MB. Does not serve arbitrary live paths — only minted share tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute or relative path to a local file to share (e.g. an image).",
+        },
+      },
+      required: ["path"],
     },
   },
 ];
@@ -242,6 +287,164 @@ async function notify(args) {
   );
 }
 
+function guessContentType(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  return EXT_CONTENT_TYPES[ext] || "application/octet-stream";
+}
+
+function readFirstLine(filePath) {
+  try {
+    const text = fs.readFileSync(filePath, "utf8").trim();
+    if (!text) return null;
+    return text.split(/\r?\n/)[0].trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePublicBaseUrl() {
+  const baseFile = path.join(SUPPORT_DIR, "public-base-url.txt");
+  const mcpFile = path.join(SUPPORT_DIR, "public-mcp-url.txt");
+
+  let base = readFirstLine(baseFile);
+  if (!base) {
+    const mcp = readFirstLine(mcpFile);
+    if (mcp) {
+      base = mcp.replace(/\/sse\/?$/i, "").replace(/\/$/, "");
+    }
+  }
+  if (base) {
+    return base.replace(/\/$/, "");
+  }
+
+  const port = process.env.SUPERGATEWAY_PORT || "8000";
+  return `http://127.0.0.1:${port}`;
+}
+
+function cleanupExpiredShares() {
+  try {
+    if (!fs.existsSync(SHARES_DIR)) return;
+    const now = Date.now();
+    for (const name of fs.readdirSync(SHARES_DIR)) {
+      if (!name.endsWith(".json")) continue;
+      const metaPath = path.join(SHARES_DIR, name);
+      try {
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+        const expiresAt = Date.parse(meta.expiresAt);
+        if (!Number.isFinite(expiresAt) || expiresAt > now) continue;
+        const token =
+          typeof meta.token === "string" && meta.token
+            ? meta.token
+            : name.slice(0, -".json".length);
+        fs.rmSync(path.join(SHARES_DIR, token), { recursive: true, force: true });
+        fs.rmSync(metaPath, { force: true });
+      } catch {
+        // best-effort
+      }
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+async function shareFile(args) {
+  cleanupExpiredShares();
+
+  const rawPath = String(args?.path ?? "").trim();
+  if (!rawPath) {
+    return textResult("path is required.", true);
+  }
+
+  const sourcePath = path.resolve(rawPath);
+
+  let stat;
+  try {
+    stat = fs.statSync(sourcePath);
+  } catch (err) {
+    return textResult(`File not found or unreadable: ${sourcePath} (${err.message})`, true);
+  }
+
+  if (!stat.isFile()) {
+    return textResult(`Not a regular file: ${sourcePath}`, true);
+  }
+
+  if (stat.size > SHARE_MAX_BYTES) {
+    return textResult(
+      `File too large: ${stat.size} bytes (max ${SHARE_MAX_BYTES} bytes / ${Math.round(SHARE_MAX_BYTES / (1024 * 1024))}MB).`,
+      true,
+    );
+  }
+
+  // Ensure readable before copying
+  try {
+    fs.accessSync(sourcePath, fs.constants.R_OK);
+  } catch (err) {
+    return textResult(`File is not readable: ${sourcePath} (${err.message})`, true);
+  }
+
+  let filename = path.basename(sourcePath);
+  if (!filename || filename === "." || filename === "..") {
+    filename = "file";
+  }
+
+  const token = randomBytes(32).toString("hex");
+  const shareDir = path.join(SHARES_DIR, token);
+  const destPath = path.join(shareDir, filename);
+  const metaPath = path.join(SHARES_DIR, `${token}.json`);
+
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + SHARE_TTL_SECONDS * 1000);
+  const contentType = guessContentType(filename);
+
+  try {
+    fs.mkdirSync(shareDir, { recursive: true });
+    fs.copyFileSync(sourcePath, destPath);
+    const meta = {
+      token,
+      filename,
+      contentType,
+      createdAt: createdAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+    };
+    fs.writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  } catch (err) {
+    try {
+      fs.rmSync(shareDir, { recursive: true, force: true });
+      fs.rmSync(metaPath, { force: true });
+    } catch {
+      // ignore rollback errors
+    }
+    return textResult(`Failed to prepare share: ${err.message}`, true);
+  }
+
+  const baseUrl = resolvePublicBaseUrl();
+  const url = `${baseUrl}/share/${token}/${encodeURIComponent(filename)}`;
+
+  const summary = [
+    `url: ${url}`,
+    `token: ${token}`,
+    `filename: ${filename}`,
+    `content_type: ${contentType}`,
+    `size_bytes: ${stat.size}`,
+    `created_at: ${createdAt.toISOString()}`,
+    `expires_at: ${expiresAt.toISOString()}`,
+    `expires_in_seconds: ${SHARE_TTL_SECONDS}`,
+    "",
+    JSON.stringify({
+      url,
+      token,
+      filename,
+      contentType,
+      sizeBytes: stat.size,
+      createdAt: createdAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      expiresInSeconds: SHARE_TTL_SECONDS,
+    }),
+  ].join("\n");
+
+  return textResult(summary);
+}
+
 async function connectCuaClient() {
   if (!fs.existsSync(CUA_DRIVER_BIN)) {
     log(`cua-driver not found at ${CUA_DRIVER_BIN} — only native tools available`);
@@ -307,6 +510,9 @@ async function main() {
     }
     if (name === "ultragateway_notify") {
       return await notify(args ?? {});
+    }
+    if (name === "ultragateway_share_file") {
+      return await shareFile(args ?? {});
     }
 
     if (!cuaClient) {

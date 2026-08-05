@@ -168,6 +168,7 @@ install -m 755 "${REPO_ROOT}/scripts/run-tunnel.sh" "${SUPPORT_DIR}/run-tunnel.s
 install -m 755 "${REPO_ROOT}/scripts/restart-launchagent.sh" "${SUPPORT_DIR}/restart-launchagent.sh"
 install -m 755 "${REPO_ROOT}/scripts/patch-supergateway-sse.js" "${SUPPORT_DIR}/patch-supergateway-sse.js"
 install -m 755 "${REPO_ROOT}/scripts/api-key-proxy.mjs" "${SUPPORT_DIR}/api-key-proxy.mjs"
+install -m 755 "${REPO_ROOT}/scripts/share-handler.mjs" "${SUPPORT_DIR}/share-handler.mjs"
 install -m 755 "${REPO_ROOT}/scripts/auto-update.sh" "${SUPPORT_DIR}/auto-update.sh"
 
 info "Installing native MCP server (shell + notifications)..."

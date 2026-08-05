@@ -120,8 +120,11 @@ The gateway runs a **composite MCP server** (`native-mcp/composite-server.mjs`) 
 |------|-------------|
 | `ultragateway_run_zsh` | Run a command in **zsh** on your Mac (stdout/stderr/exit code) |
 | `ultragateway_notify` | Show a **macOS notification** branded as ultragateway |
+| `ultragateway_share_file` | Copy a local file into an ephemeral share and return a public URL (default **10 min** expiry, **50MB** max) |
 
 Notifications are delivered through the **menu bar app** (Notification Center with the ultragateway icon). If the menu bar app is not running, a system notification fallback is used.
+
+**Ephemeral shares:** `ultragateway_share_file` takes a `path` argument, copies the file under `~/Library/Application Support/ultragateway/shares/<token>/`, and returns a URL like `{publicBase}/share/{token}/{filename}`. Links are only minted via this MCP tool (opaque tokens — not raw filesystem paths). Public base comes from `public-base-url.txt` / `public-mcp-url.txt`, else `http://127.0.0.1:$SUPERGATEWAY_PORT`.
 
 Configure in `config.env`:
 
@@ -130,9 +133,11 @@ NATIVE_SHELL_ENABLED=1          # set 0 to disable shell tool
 NATIVE_SHELL_TIMEOUT=30         # default timeout (seconds)
 NATIVE_SHELL_TIMEOUT_MAX=300    # hard cap
 NATIVE_NOTIFY_ENABLED=1         # set 0 to disable notify tool
+SHARE_TTL_SECONDS=600           # share link lifetime (default 10 minutes)
+SHARE_MAX_BYTES=52428800        # max share size (default 50MB)
 ```
 
-**Security:** `ultragateway_run_zsh` executes arbitrary shell commands on your machine. Only connect trusted remote agents (Poke, etc.) to your tunnel URL.
+**Security:** `ultragateway_run_zsh` executes arbitrary shell commands on your machine. Only connect trusted remote agents (Poke, etc.) to your tunnel URL. Share links are unguessable but publicly fetchable once minted — treat them like temporary secrets.
 
 ### API key protection (optional)
 

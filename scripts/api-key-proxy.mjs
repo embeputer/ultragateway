@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 /**
- * Reverse proxy in front of Supergateway with optional Bearer API key auth.
- * Protects the full MCP HTTP surface (SSE, POST /message, streamable HTTP, WS upgrade).
+ * Public HTTP listener in front of Supergateway.
+ * - Serves GET /share/{token}[/filename] without Bearer auth (see share-handler.mjs).
+ * - Proxies all other routes to Supergateway, with optional Bearer API key auth.
  */
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
+import { handleShareRequest, isShareRequest } from './share-handler.mjs';
 
 function usage() {
   process.stderr.write(
-    'usage: api-key-proxy.mjs --listen <port> --upstream <port> [--api-key <key>]\n',
+    'usage: api-key-proxy.mjs --listen <port> --upstream <port> [--api-key <key>] [--support-dir <dir>]\n',
   );
   process.exit(1);
 }
 
 function parseArgs(argv) {
-  const opts = { listen: null, upstream: null, apiKey: null };
+  const opts = { listen: null, upstream: null, apiKey: null, supportDir: null };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--listen' && argv[i + 1]) {
@@ -24,14 +28,20 @@ function parseArgs(argv) {
       opts.upstream = Number(argv[++i]);
     } else if (arg === '--api-key' && argv[i + 1]) {
       opts.apiKey = argv[++i];
+    } else if (arg === '--support-dir' && argv[i + 1]) {
+      opts.supportDir = argv[++i];
     } else {
       usage();
     }
   }
-  if (!opts.listen || !opts.upstream || !opts.apiKey) {
+  if (!opts.listen || !opts.upstream) {
     usage();
   }
   return opts;
+}
+
+function defaultSupportDir() {
+  return path.join(os.homedir(), 'Library', 'Application Support', 'ultragateway');
 }
 
 function extractBearer(authHeader) {
@@ -65,17 +75,10 @@ function sendUnauthorized(res) {
 }
 
 function log(message) {
-  process.stderr.write(`[${new Date().toISOString()}] api-key-proxy: ${message}\n`);
+  process.stderr.write(`[${new Date().toISOString()}] gateway-proxy: ${message}\n`);
 }
 
-const { listen, upstream, apiKey } = parseArgs(process.argv);
-
-const server = http.createServer((clientReq, clientRes) => {
-  if (!authorized(clientReq, apiKey)) {
-    sendUnauthorized(clientRes);
-    return;
-  }
-
+function proxyToUpstream(clientReq, clientRes) {
   const proxyReq = http.request(
     {
       hostname: '127.0.0.1',
@@ -99,10 +102,44 @@ const server = http.createServer((clientReq, clientRes) => {
   });
 
   clientReq.pipe(proxyReq);
+}
+
+const opts = parseArgs(process.argv);
+const { listen, upstream, apiKey } = opts;
+const supportDir = opts.supportDir
+  ?? process.env.ULTRAGATEWAY_SUPPORT_DIR
+  ?? defaultSupportDir();
+
+const server = http.createServer(async (clientReq, clientRes) => {
+  if (isShareRequest(clientReq.url)) {
+    try {
+      await handleShareRequest(clientReq, clientRes, supportDir, log);
+    } catch (err) {
+      log(`share handler error: ${err.message}`);
+      if (!clientRes.headersSent) {
+        clientRes.writeHead(500, { 'Content-Type': 'text/plain' });
+      }
+      clientRes.end('Internal Server Error');
+    }
+    return;
+  }
+
+  if (apiKey && !authorized(clientReq, apiKey)) {
+    sendUnauthorized(clientRes);
+    return;
+  }
+
+  proxyToUpstream(clientReq, clientRes);
 });
 
 server.on('upgrade', (clientReq, clientSocket, head) => {
-  if (!authorized(clientReq, apiKey)) {
+  if (isShareRequest(clientReq.url)) {
+    clientSocket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    clientSocket.destroy();
+    return;
+  }
+
+  if (apiKey && !authorized(clientReq, apiKey)) {
     clientSocket.write('HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\n\r\n');
     clientSocket.destroy();
     return;
@@ -138,5 +175,7 @@ server.on('upgrade', (clientReq, clientSocket, head) => {
 });
 
 server.listen(listen, () => {
-  log(`listening on ${listen}, forwarding to 127.0.0.1:${upstream} (Bearer auth enabled)`);
+  const authMode = apiKey ? 'Bearer auth enabled' : 'no Bearer auth';
+  log(`listening on ${listen}, forwarding to 127.0.0.1:${upstream} (${authMode})`);
+  log(`share files from ${path.join(supportDir, 'shares')}`);
 });

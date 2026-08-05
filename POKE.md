@@ -112,6 +112,8 @@ After creating the integration:
 2. Ask something that uses computer control, e.g. “What apps are running on my Mac?”
 3. If tools fail, open [poke.com integrations](https://poke.com) and check the integration status or trigger a tool re-sync
 
+Native ultragateway tools also appear alongside cua-driver tools, including `ultragateway_share_file` (ephemeral HTTPS link for a local file, default 10-minute expiry). Re-sync the integration after upgrading ultragateway if that tool is missing.
+
 ## Troubleshooting
 
 | Issue | Fix |
