@@ -257,6 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Open Settings", action: #selector(openSettings), symbolName: "gearshape", keyEquivalent: ","))
+        menu.addItem(makeItem("Sleep Display", action: #selector(sleepDisplay), symbolName: "moon.zzz", keyEquivalent: ""))
         menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway), symbolName: "arrow.clockwise"))
         menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel), symbolName: "network"))
         menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates), symbolName: "arrow.down.circle"))
@@ -307,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func copyPublicURL() { monitor.copyPublicURL() }
     @objc private func enableNotifications() { monitor.requestNotificationAccess() }
+    @objc private func sleepDisplay() { monitor.sleepDisplay() }
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
     @objc private func checkForUpdates() { monitor.checkForUpdates() }
@@ -773,6 +775,9 @@ struct SettingsView: View {
                 .tracking(1.1)
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                actionTile(title: "Sleep Display", symbol: "moon.zzz") {
+                    monitor.sleepDisplay()
+                }
                 actionTile(title: "Restart Gateway", symbol: "arrow.clockwise") {
                     monitor.restartGateway()
                 }
@@ -1281,6 +1286,18 @@ final class GatewayMonitor: ObservableObject {
 
     func restartGateway() {
         restartService(label: gatewayLabel, displayName: "Gateway")
+    }
+
+    /// Put displays to sleep without sleeping the system (MCP/tunnel keep running).
+    func sleepDisplay() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        task.arguments = ["displaysleepnow"]
+        do {
+            try task.run()
+        } catch {
+            NSLog("ultragateway: failed to sleep display: \(error.localizedDescription)")
+        }
     }
 
     func restartTunnel() {
