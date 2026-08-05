@@ -36,4 +36,14 @@ else
   warn "Menu bar icon PNGs not found in ${ASSETS_DIR} — using system symbol"
 fi
 
+info "Ad-hoc signing app bundle (required for notification prompts)..."
+# SwiftPM linker-signs the binary as "ultragateway-menubar" without binding Info.plist.
+# Sign launcher + menubar, then the bundle so UserNotifications sees CFBundleIdentifier.
+if [[ -f "${MACOS_DIR}/ultragateway" ]]; then
+  codesign --force --sign - --identifier "com.ultragateway.em.launcher" "${MACOS_DIR}/ultragateway" >/dev/null 2>&1 || true
+fi
+codesign --force --sign - --identifier "com.ultragateway.em" "${MACOS_DIR}/ultragateway-menubar" >/dev/null
+codesign --force --deep --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}" >/dev/null
+codesign -dv --verbose=2 "${APP_BUNDLE}" 2>&1 | grep -E 'Identifier=|Info\.plist|Signature=' || true
+
 info "Menu bar app ready. Re-run install.sh to copy to /Applications."

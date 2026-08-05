@@ -218,6 +218,11 @@ if [[ -x "${REPO_ROOT}/ultragateway.app/Contents/MacOS/ultragateway-menubar" ]];
 else
   warn "ultragateway-menubar binary missing — open ${APP_BUNDLE} will not show menu bar icon"
 fi
+# Re-sign after copy so UserNotifications can bind CFBundleIdentifier.
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}/Contents/MacOS/ultragateway-menubar" >/dev/null 2>&1 || true
+  codesign --force --deep --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}" >/dev/null 2>&1 || true
+fi
 
 # Build PATH for launchd (minimal environment)
 LAUNCHD_PATH="/usr/bin:/bin:/usr/sbin:/sbin"

@@ -118,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let monitor = GatewayMonitor()
     private var notificationWatcher: NotificationQueueWatcher?
     private var cancellables = Set<AnyCancellable>()
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -233,9 +234,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+
+        if settingsWindow == nil {
+            let hosting = NSHostingController(rootView: SettingsView(monitor: monitor))
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "ultragateway Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.setContentSize(NSSize(width: 440, height: 520))
+            window.center()
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
     @objc private func quit() { NSApp.terminate(nil) }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === settingsWindow else { return }
+        NSApp.setActivationPolicy(.accessory)
+    }
 }
 
 @main
@@ -431,8 +451,29 @@ final class GatewayMonitor: ObservableObject {
                 guard let self else { return }
                 switch settings.authorizationStatus {
                 case .notDetermined:
-                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
-                        self.refreshNotificationStatus()
+                    // Accessory (LSUIElement) apps fail requestAuthorization with UNError 1
+                    // unless activated as a regular app first. Bundle must also be codesigned
+                    // with Info.plist bound to CFBundleIdentifier.
+                    NSApp.setActivationPolicy(.regular)
+                    NSApp.activate(ignoringOtherApps: true)
+                    DispatchQueue.main.async {
+                        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, error in
+                            DispatchQueue.main.async {
+                                self.refreshNotificationStatus()
+                                if let error, (error as NSError).domain == "UNErrorDomain", (error as NSError).code == 1 {
+                                    self.openNotificationSettings()
+                                    let alert = NSAlert()
+                                    alert.messageText = "Enable Notifications"
+                                    alert.informativeText = "macOS blocked the permission prompt (often due to app signing). Turn on notifications for ultragateway in System Settings, then click Enable again."
+                                    alert.alertStyle = .informational
+                                    alert.addButton(withTitle: "OK")
+                                    alert.runModal()
+                                }
+                                if !NSApp.windows.contains(where: \.isVisible) {
+                                    NSApp.setActivationPolicy(.accessory)
+                                }
+                            }
+                        }
                     }
                 case .authorized where settings.alertSetting == .enabled:
                     self.refreshNotificationStatus()
