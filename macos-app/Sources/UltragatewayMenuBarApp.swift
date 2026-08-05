@@ -115,7 +115,7 @@ final class NotificationQueueWatcher {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
-    private let monitor = GatewayMonitor()
+    let monitor = GatewayMonitor()
     private var notificationWatcher: NotificationQueueWatcher?
     private var cancellables = Set<AnyCancellable>()
 
@@ -188,6 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates)))
 
         menu.addItem(.separator())
+
+        let settingsItem = makeItem("Settings…", action: #selector(openSettings))
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
         menu.addItem(makeItem("Quit ultragateway Menu", action: #selector(quit)))
 
         return menu
@@ -227,6 +231,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
     @objc private func checkForUpdates() { monitor.checkForUpdates() }
+    @objc private func openSettings() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 }
 
@@ -236,7 +245,96 @@ struct UltragatewayMenuBarApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(monitor: appDelegate.monitor)
+        }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var monitor: GatewayMonitor
+
+    var body: some View {
+        Form {
+            Section("Status") {
+                ServiceStatusRow(label: "Gateway", status: monitor.gatewayStatus)
+                ServiceStatusRow(label: "Tunnel", status: monitor.tunnelStatus)
+
+                LabeledContent("Public MCP URL") {
+                    if let url = monitor.publicMcpURL {
+                        HStack {
+                            Text(url)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Button("Copy") {
+                                monitor.copyPublicURL()
+                            }
+                        }
+                    } else {
+                        Text("No public URL yet")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Notifications") {
+                LabeledContent("Permission") {
+                    HStack {
+                        Image(systemName: monitor.notificationsEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(monitor.notificationsEnabled ? .green : .orange)
+                        Text(monitor.notificationsEnabled ? "Enabled" : "Disabled")
+                    }
+                }
+
+                if !monitor.notificationsEnabled {
+                    Button("Enable Notifications…") {
+                        monitor.requestNotificationAccess()
+                    }
+                }
+            }
+
+            Section("Actions") {
+                Button("Open Poke Integrations") {
+                    monitor.openPokeIntegrations()
+                }
+                Button("Check for Updates") {
+                    monitor.checkForUpdates()
+                }
+                Button("Open Logs Folder") {
+                    monitor.openLogsFolder()
+                }
+                Button("Open Support Folder") {
+                    monitor.openSupportFolder()
+                }
+            }
+
+            Section("Services") {
+                Button("Restart Gateway") {
+                    monitor.restartGateway()
+                }
+                Button("Restart Tunnel") {
+                    monitor.restartTunnel()
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minWidth: 460, minHeight: 420)
+        .onAppear { monitor.refresh() }
+    }
+}
+
+private struct ServiceStatusRow: View {
+    let label: String
+    let status: ServiceStatus
+
+    var body: some View {
+        LabeledContent(label) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 8, height: 8)
+                Text(status.label)
+            }
         }
     }
 }
@@ -251,6 +349,14 @@ enum ServiceStatus {
         case .running: return "Running"
         case .stopped: return "Stopped"
         case .unknown: return "Unknown"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .running: return .green
+        case .stopped: return .red
+        case .unknown: return .secondary
         }
     }
 }
@@ -348,6 +454,17 @@ final class GatewayMonitor: ObservableObject {
         if let url = URL(string: "https://poke.com/integrations/new") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    func openLogsFolder() {
+        let logsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/ultragateway")
+        try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(logsDir)
+    }
+
+    func openSupportFolder() {
+        NSWorkspace.shared.open(supportDir)
     }
 
     func restartGateway() {

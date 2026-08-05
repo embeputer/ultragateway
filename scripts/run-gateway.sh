@@ -113,7 +113,7 @@ log "Starting Supergateway on port ${SUPERGATEWAY_PORT} (${SUPERGATEWAY_OUTPUT_T
 log "Composite MCP: cua-driver + ultragateway native tools (run_zsh, notify)"
 
 exec "$SUPERGATEWAY_BIN" \
-  --stdio "node ${NATIVE_MCP_SERVER}" \
+  --stdio "node $(printf '%q' "${NATIVE_MCP_SERVER}")" \
   --port "${SUPERGATEWAY_PORT}" \
   --outputTransport "${SUPERGATEWAY_OUTPUT_TRANSPORT}" \
   --logLevel "${SUPERGATEWAY_LOG_LEVEL}"
