@@ -58,10 +58,23 @@ The most reliable way to register a server:
 2. **Name:** `CUA Driver` (or any label)
 3. **MCP Server URL:** paste the value from `public-mcp-url.txt`
    - Example: `https://your-mac.your-tailnet.ts.net/sse`
-4. **API Key:** leave empty (cua-driver does not use API key auth through Supergateway)
+4. **API Key:** leave empty unless API key protection is enabled in ultragateway Settings (see below)
 5. Click **Create Integration**
 
 Poke connects, discovers tools, and syncs them automatically. You can re-sync anytime from the integrations page.
+
+### API key protection (optional)
+
+If you enabled **API key protection** in the ultragateway menu bar app (Settings → Security), remote clients must send `Authorization: Bearer <api_key>` on every MCP HTTP request. Paste the same key into Poke’s **API Key** field when creating the integration.
+
+Verify locally before adding to Poke:
+
+```bash
+source ~/Library/Application\ Support/ultragateway/config.env
+curl -sI -H "Authorization: Bearer ${API_KEY}" "http://127.0.0.1:8000/sse" | head -1
+```
+
+Without the header (or with a wrong key), the gateway returns `401 Unauthorized`.
 
 ### Prefilled link (optional)
 
@@ -107,6 +120,7 @@ After creating the integration:
 | Poke says “invalid server url” | Usually a broken Supergateway npm install — POST fails while GET `/sse` still works. Run `./install.sh` then restart gateway |
 | Poke can’t connect | Confirm URL is HTTPS and includes `/sse` |
 | URL changed after restart | Use Tailscale Funnel (stable per machine) or ngrok reserved domain |
+| 401 Unauthorized | Protection requires `Authorization: Bearer <key>` — copy key from menu bar Settings |
 | Tools empty | Re-sync on integrations page; restart gateway |
 | cua-driver permissions | Run `cua-driver permissions grant` |
 

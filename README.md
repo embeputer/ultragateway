@@ -134,6 +134,38 @@ NATIVE_NOTIFY_ENABLED=1         # set 0 to disable notify tool
 
 **Security:** `ultragateway_run_zsh` executes arbitrary shell commands on your machine. Only connect trusted remote agents (Poke, etc.) to your tunnel URL.
 
+### API key protection (optional)
+
+When your MCP URL is exposed via Tailscale Funnel or another public tunnel, you can require `Authorization: Bearer <api_key>` on every HTTP request to the MCP surface (SSE, POST `/message`, streamable HTTP, WebSocket upgrade).
+
+Default is **off**. Enable and manage the key in the menu bar app **Settings → Security**, or edit `config.env`:
+
+```bash
+API_KEY_PROTECTION_ENABLED=true
+API_KEY=your-generated-key
+```
+
+When protection is off, `API_KEY` should be empty and no Bearer header is required.
+
+Test locally:
+
+```bash
+# protection off (default)
+curl -sI "http://127.0.0.1:8000/sse" | head -1
+
+# protection on
+curl -sI -H "Authorization: Bearer YOUR_KEY" "http://127.0.0.1:8000/sse" | head -1
+curl -sI "http://127.0.0.1:8000/sse" | head -1   # HTTP/1.1 401 Unauthorized
+```
+
+In Poke, paste the same key into the **API Key** field when creating the integration.
+
+After changing protection settings, restart the gateway:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.ultragateway.em"
+```
+
 ## Auto-updates
 
 When enabled, LaunchAgent `com.ultragateway.em.update` checks GitHub every **6 hours** (configurable) and runs `install.sh` if `main` has new commits.

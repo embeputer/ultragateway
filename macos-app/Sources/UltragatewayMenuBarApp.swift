@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import Security
 import UserNotifications
 
 final class NotificationQueueWatcher {
@@ -251,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
-            window.setContentSize(NSSize(width: 480, height: 580))
+            window.setContentSize(NSSize(width: 480, height: 640))
             window.center()
             window.isReleasedWhenClosed = false
             window.delegate = self
@@ -284,6 +285,8 @@ struct SettingsView: View {
     @ObservedObject var monitor: GatewayMonitor
     @State private var appeared = false
     @State private var copiedFlash = false
+    @State private var copiedKeyFlash = false
+    @State private var showRegenerateConfirm = false
 
     private let ink = Color(red: 0.07, green: 0.10, blue: 0.14)
     private var accent: Color { .accentColor }
@@ -296,6 +299,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     brandHero
                     statusGlass
+                    apiKeyGlass
                     if !monitor.notificationsEnabled {
                         notificationsGlass
                     }
@@ -307,12 +311,20 @@ struct SettingsView: View {
             }
         }
         .tint(accent)
-        .frame(minWidth: 480, minHeight: 560)
+        .frame(minWidth: 480, minHeight: 620)
         .onAppear {
             monitor.refresh()
             withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
                 appeared = true
             }
+        }
+        .alert("Regenerate API Key?", isPresented: $showRegenerateConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Regenerate", role: .destructive) {
+                monitor.regenerateApiKey()
+            }
+        } message: {
+            Text("A new key will be generated and the gateway will restart. Clients using the old key will stop working until updated.")
         }
     }
 
@@ -405,6 +417,127 @@ struct SettingsView: View {
         .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(glassStroke(radius: 22))
         .shadow(color: accent.opacity(0.12), radius: 18, y: 8)
+    }
+
+    private var apiKeyGlass: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Security")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.45))
+                .textCase(.uppercase)
+                .tracking(1.1)
+
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(width: 36, height: 36)
+                    .background(.ultraThinMaterial, in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("API key protection")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink)
+                    Text("Require Bearer auth on the MCP HTTP surface.")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle("", isOn: Binding(
+                    get: { monitor.apiKeyProtectionEnabled },
+                    set: { monitor.setApiKeyProtectionEnabled($0) }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(accent)
+            }
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+            )
+
+            if monitor.apiKeyProtectionEnabled {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("API Key")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.45))
+
+                    HStack(spacing: 10) {
+                        if let key = monitor.apiKey, !key.isEmpty {
+                            Text(key)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundStyle(ink.opacity(0.85))
+                                .lineLimit(2)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button {
+                                monitor.copyApiKey()
+                                flashKeyCopied(true)
+                            } label: {
+                                Text(copiedKeyFlash ? "Copied" : "Copy")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .background(
+                                        copiedKeyFlash ? accent.opacity(0.9) : ink.opacity(0.88),
+                                        in: Capsule()
+                                    )
+                                    .foregroundStyle(.white)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Text("Generating…")
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundStyle(ink.opacity(0.4))
+                        }
+                    }
+                    .padding(12)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+                    )
+
+                    Button {
+                        showRegenerateConfirm = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Regenerate Key")
+                        }
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink.opacity(0.75))
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(.white.opacity(0.4), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(monitor.apiKey?.isEmpty != false)
+                }
+            }
+        }
+        .padding(18)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(glassStroke(radius: 22))
+        .shadow(color: accent.opacity(0.10), radius: 16, y: 7)
+    }
+
+    private func flashKeyCopied(_ flash: Bool) {
+        guard flash else { return }
+        withAnimation(.easeOut(duration: 0.2)) { copiedKeyFlash = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation { copiedKeyFlash = false }
+        }
     }
 
     private var notificationsGlass: some View {
@@ -600,10 +733,13 @@ final class GatewayMonitor: ObservableObject {
     @Published var tunnelStatus: ServiceStatus = .unknown
     @Published var publicMcpURL: String?
     @Published var notificationsEnabled = true
+    @Published var apiKeyProtectionEnabled = false
+    @Published var apiKey: String?
 
     let supportDir: URL
     private let publicURLFile: URL
     private let restartScript: URL
+    private let configEnvFile: URL
     private let gatewayLabel: String
     private let tunnelLabel: String
     private let gatewayPort: Int
@@ -614,6 +750,7 @@ final class GatewayMonitor: ObservableObject {
         supportDir = home.appendingPathComponent("Library/Application Support/ultragateway")
         publicURLFile = supportDir.appendingPathComponent("public-mcp-url.txt")
         restartScript = supportDir.appendingPathComponent("restart-launchagent.sh")
+        configEnvFile = supportDir.appendingPathComponent("config.env")
         let labels = Self.readLaunchAgentLabels(supportDir: supportDir)
         gatewayLabel = labels.gateway
         tunnelLabel = labels.tunnel
@@ -644,7 +781,70 @@ final class GatewayMonitor: ObservableObject {
             gatewayStatus = .running
         }
 
+        refreshApiKeySettings()
         refreshNotificationStatus()
+    }
+
+    func refreshApiKeySettings() {
+        let enabled = Self.readConfigBool(key: "API_KEY_PROTECTION_ENABLED", from: configEnvFile) ?? false
+        let key = Self.readConfigValue(key: "API_KEY", from: configEnvFile)
+        let trimmedKey = key?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
+
+        if apiKeyProtectionEnabled != enabled {
+            apiKeyProtectionEnabled = enabled
+        }
+        if apiKey != resolvedKey {
+            apiKey = resolvedKey
+        }
+    }
+
+    func setApiKeyProtectionEnabled(_ enabled: Bool) {
+        if enabled {
+            let existing = Self.readConfigValue(key: "API_KEY", from: configEnvFile)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let key = existing.isEmpty ? Self.generateApiKey() : existing
+            Self.writeConfigValues(
+                [
+                    "API_KEY_PROTECTION_ENABLED": "true",
+                    "API_KEY": key,
+                ],
+                to: configEnvFile
+            )
+            apiKeyProtectionEnabled = true
+            apiKey = key
+        } else {
+            Self.writeConfigValues(
+                [
+                    "API_KEY_PROTECTION_ENABLED": "false",
+                    "API_KEY": "",
+                ],
+                to: configEnvFile
+            )
+            apiKeyProtectionEnabled = false
+            apiKey = nil
+        }
+        restartGateway()
+    }
+
+    func regenerateApiKey() {
+        guard apiKeyProtectionEnabled else { return }
+        let key = Self.generateApiKey()
+        Self.writeConfigValues(
+            [
+                "API_KEY_PROTECTION_ENABLED": "true",
+                "API_KEY": key,
+            ],
+            to: configEnvFile
+        )
+        apiKey = key
+        restartGateway()
+    }
+
+    func copyApiKey() {
+        guard let key = apiKey, !key.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(key, forType: .string)
     }
 
     func refreshNotificationStatus() {
@@ -703,6 +903,94 @@ final class GatewayMonitor: ObservableObject {
         guard let url = publicMcpURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
+    }
+
+    private static func generateApiKey() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status != errSecSuccess {
+            // Extremely unlikely; fall back to combining two UUIDs as entropy.
+            return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func readConfigValue(key: String, from url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            guard trimmed.hasPrefix("\(key)=") else { continue }
+            var value = String(trimmed.dropFirst(key.count + 1))
+            if value.count >= 2 {
+                let first = value.first!
+                let last = value.last!
+                if (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+                    value = String(value.dropFirst().dropLast())
+                }
+            }
+            return value
+        }
+        return nil
+    }
+
+    private static func readConfigBool(key: String, from url: URL) -> Bool? {
+        guard let raw = readConfigValue(key: key, from: url)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+              !raw.isEmpty else {
+            return nil
+        }
+        switch raw {
+        case "1", "true", "yes", "on":
+            return true
+        case "0", "false", "no", "off":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private static func writeConfigValues(_ updates: [String: String], to url: URL) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        if text.isEmpty {
+            text = ""
+        }
+
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var found = Set<String>()
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            for (key, value) in updates {
+                if trimmed.hasPrefix("\(key)=") {
+                    lines[index] = "\(key)=\(value)"
+                    found.insert(key)
+                    break
+                }
+            }
+        }
+
+        let missing = updates.keys.filter { !found.contains($0) }.sorted()
+        if !missing.isEmpty {
+            if let last = lines.last, !last.isEmpty {
+                lines.append("")
+            }
+            for key in missing {
+                lines.append("\(key)=\(updates[key] ?? "")")
+            }
+        }
+
+        var output = lines.joined(separator: "\n")
+        if !output.hasSuffix("\n") {
+            output += "\n"
+        }
+        try? output.write(to: url, atomically: true, encoding: .utf8)
     }
 
     func openLogsFolder() {
