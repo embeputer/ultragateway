@@ -243,9 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(monitor: monitor))
+            hosting.view.wantsLayer = true
+            hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
             let window = NSWindow(contentViewController: hosting)
             window.title = "ultragateway Settings"
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.titlebarAppearsTransparent = true
             window.setContentSize(NSSize(width: 480, height: 580))
             window.center()
             window.isReleasedWhenClosed = false
@@ -281,9 +286,7 @@ struct SettingsView: View {
     @State private var copiedFlash = false
 
     private let ink = Color(red: 0.07, green: 0.10, blue: 0.14)
-    private let mist = Color(red: 0.86, green: 0.92, blue: 0.94)
-    private let teal = Color(red: 0.10, green: 0.62, blue: 0.58)
-    private let deepTeal = Color(red: 0.04, green: 0.28, blue: 0.32)
+    private var accent: Color { .accentColor }
 
     var body: some View {
         ZStack {
@@ -303,6 +306,7 @@ struct SettingsView: View {
                 .offset(y: appeared ? 0 : 10)
             }
         }
+        .tint(accent)
         .frame(minWidth: 480, minHeight: 560)
         .onAppear {
             monitor.refresh()
@@ -313,30 +317,10 @@ struct SettingsView: View {
     }
 
     private var background: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.93, green: 0.96, blue: 0.97),
-                    Color(red: 0.78, green: 0.88, blue: 0.90),
-                    Color(red: 0.70, green: 0.82, blue: 0.86),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            Circle()
-                .fill(teal.opacity(0.28))
-                .frame(width: 260, height: 260)
-                .blur(radius: 48)
-                .offset(x: 170, y: -120)
-
-            Circle()
-                .fill(deepTeal.opacity(0.18))
-                .frame(width: 220, height: 220)
-                .blur(radius: 42)
-                .offset(x: -160, y: 220)
-        }
-        .ignoresSafeArea()
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .opacity(0.8)
+            .ignoresSafeArea()
     }
 
     private var brandHero: some View {
@@ -345,7 +329,7 @@ struct SettingsView: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(
                     LinearGradient(
-                        colors: [ink, deepTeal],
+                        colors: [ink, accent],
                         startPoint: .leading,
                         endPoint: .trailing
                     )
@@ -399,7 +383,7 @@ struct SettingsView: View {
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(copiedFlash ? teal.opacity(0.9) : ink.opacity(0.88), in: Capsule())
+                                .background(copiedFlash ? accent.opacity(0.9) : ink.opacity(0.88), in: Capsule())
                                 .foregroundStyle(.white)
                         }
                         .buttonStyle(.plain)
@@ -420,14 +404,14 @@ struct SettingsView: View {
         .padding(18)
         .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(glassStroke(radius: 22))
-        .shadow(color: deepTeal.opacity(0.12), radius: 18, y: 8)
+        .shadow(color: accent.opacity(0.12), radius: 18, y: 8)
     }
 
     private var notificationsGlass: some View {
         HStack(alignment: .center, spacing: 14) {
             Image(systemName: "bell.badge")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(teal)
+                .foregroundStyle(accent)
                 .frame(width: 40, height: 40)
                 .background(.ultraThinMaterial, in: Circle())
 
@@ -446,12 +430,12 @@ struct SettingsView: View {
             Button("Enable") {
                 monitor.requestNotificationAccess()
             }
-            .buttonStyle(GlassAccentButtonStyle(teal: teal))
+            .buttonStyle(GlassAccentButtonStyle())
         }
         .padding(16)
         .background(glassFill, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(glassStroke(radius: 20))
-        .shadow(color: deepTeal.opacity(0.10), radius: 14, y: 6)
+        .shadow(color: accent.opacity(0.10), radius: 14, y: 6)
     }
 
     private var actionsGlass: some View {
@@ -503,7 +487,7 @@ struct SettingsView: View {
         .padding(18)
         .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(glassStroke(radius: 22))
-        .shadow(color: deepTeal.opacity(0.10), radius: 16, y: 7)
+        .shadow(color: accent.opacity(0.10), radius: 16, y: 7)
     }
 
     private func statusChip(title: String, status: ServiceStatus) -> some View {
@@ -535,7 +519,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: symbol)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(teal)
+                    .foregroundStyle(accent)
                 Text(title)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(ink)
@@ -560,7 +544,7 @@ struct SettingsView: View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
             .strokeBorder(
                 LinearGradient(
-                    colors: [.white.opacity(0.65), .white.opacity(0.15), teal.opacity(0.25)],
+                    colors: [.white.opacity(0.65), .white.opacity(0.15), accent.opacity(0.25)],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 ),
@@ -570,8 +554,6 @@ struct SettingsView: View {
 }
 
 private struct GlassAccentButtonStyle: ButtonStyle {
-    let teal: Color
-
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .bold, design: .rounded))
@@ -579,7 +561,11 @@ private struct GlassAccentButtonStyle: ButtonStyle {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(
-                LinearGradient(colors: [teal, teal.opacity(0.75)], startPoint: .top, endPoint: .bottom),
+                LinearGradient(
+                    colors: [Color.accentColor, Color.accentColor.opacity(0.75)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
                 in: Capsule()
             )
             .opacity(configuration.isPressed ? 0.85 : 1)
