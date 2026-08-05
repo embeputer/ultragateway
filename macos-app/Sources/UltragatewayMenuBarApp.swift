@@ -183,15 +183,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         menu.addItem(makeItem("Open Poke Integrations", action: #selector(openPokeIntegrations)))
+        let settingsItem = makeItem("Open Settings", action: #selector(openSettings))
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
         menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway)))
         menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel)))
         menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates)))
 
         menu.addItem(.separator())
-
-        let settingsItem = makeItem("Settings…", action: #selector(openSettings))
-        settingsItem.keyEquivalent = ","
-        menu.addItem(settingsItem)
         menu.addItem(makeItem("Quit ultragateway Menu", action: #selector(quit)))
 
         return menu
