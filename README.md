@@ -121,10 +121,11 @@ The gateway runs a **composite MCP server** (`native-mcp/composite-server.mjs`) 
 | `ultragateway_run_zsh` | Run a command in **zsh** on your Mac (stdout/stderr/exit code) |
 | `ultragateway_notify` | Show a **macOS notification** branded as ultragateway |
 | `ultragateway_share_file` | Copy a local file into an ephemeral share and return a public URL (default **10 min** expiry, **50MB** max) |
+| `ultragateway_close_shares` | Immediately revoke **all** minted share links |
 
 Notifications are delivered through the **menu bar app** (Notification Center with the ultragateway icon). If the menu bar app is not running, a system notification fallback is used.
 
-**Ephemeral shares:** `ultragateway_share_file` takes a `path` argument, copies the file under `~/Library/Application Support/ultragateway/shares/<token>/`, and returns a URL like `{publicBase}/share/{token}/{filename}`. Links are only minted via this MCP tool (opaque tokens — not raw filesystem paths). Public base comes from `public-base-url.txt` / `public-mcp-url.txt`, else `http://127.0.0.1:$SUPERGATEWAY_PORT`.
+**Ephemeral shares:** `ultragateway_share_file` takes a `path` argument, copies the file under `~/Library/Application Support/ultragateway/shares/<token>/`, and returns a URL like `{publicBase}/share/{token}/{filename}`. Links are only minted via this MCP tool (opaque tokens — not raw filesystem paths). Public base comes from `public-base-url.txt` / `public-mcp-url.txt`, else `http://127.0.0.1:$SUPERGATEWAY_PORT`. Re-sharing the same path returns the existing URL when more than **5 minutes** remain; otherwise the old share is revoked and a new one is minted. Call `ultragateway_close_shares` to revoke every active share immediately (existing URLs start returning 404).
 
 Configure in `config.env`:
 

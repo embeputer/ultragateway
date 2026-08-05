@@ -39,6 +39,8 @@ const SHARE_MAX_BYTES = (() => {
   const n = Number(process.env.SHARE_MAX_BYTES || String(50 * 1024 * 1024));
   return Number.isFinite(n) && n > 0 ? n : 50 * 1024 * 1024;
 })();
+/** Reuse an existing share for the same path when more than this many seconds remain. */
+const SHARE_REUSE_MIN_REMAINING_SECONDS = 300;
 
 const NOTIFY_QUEUE = path.join(SUPPORT_DIR, "notify-queue.jsonl");
 const SHARES_DIR = path.join(SUPPORT_DIR, "shares");
@@ -113,7 +115,7 @@ const NATIVE_TOOLS = [
   {
     name: "ultragateway_share_file",
     description:
-      "Copy a local file into an ephemeral share store and return a public HTTPS (or tunnel) URL others can open/download. Links expire after a short TTL (default 10 minutes). Max size 50MB. Does not serve arbitrary live paths — only minted share tokens.",
+      "Copy a local file into an ephemeral share store and return a public HTTPS (or tunnel) URL others can open/download. Links expire after a short TTL (default 10 minutes). Max size 50MB. If the same path is already shared with more than 5 minutes remaining, returns the existing URL; if under 5 minutes remain, revokes and remints. Does not serve arbitrary live paths — only minted share tokens.",
     inputSchema: {
       type: "object",
       properties: {
@@ -123,6 +125,16 @@ const NATIVE_TOOLS = [
         },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "ultragateway_close_shares",
+    description:
+      "Immediately revoke all ephemeral file shares. Deletes every minted share under the share store so existing /share/{token} links stop working.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
     },
   },
 ];
@@ -347,6 +359,165 @@ function cleanupExpiredShares() {
   }
 }
 
+async function closeAllShares() {
+  if (!fs.existsSync(SHARES_DIR)) {
+    return textResult(
+      ["closed_count: 0", "No share store found — nothing to close."].join("\n"),
+    );
+  }
+
+  const tokens = new Set();
+  const errors = [];
+
+  let entries;
+  try {
+    entries = fs.readdirSync(SHARES_DIR, { withFileTypes: true });
+  } catch (err) {
+    return textResult(`Failed to read share store: ${err.message}`, true);
+  }
+
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      tokens.add(entry.name);
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(".json")) {
+      tokens.add(entry.name.slice(0, -".json".length));
+    }
+  }
+
+  for (const token of tokens) {
+    try {
+      fs.rmSync(path.join(SHARES_DIR, token), { recursive: true, force: true });
+      fs.rmSync(path.join(SHARES_DIR, `${token}.json`), { force: true });
+    } catch (err) {
+      errors.push(`${token}: ${err.message}`);
+    }
+  }
+
+  // Remove any leftover non-token junk in the share store.
+  try {
+    for (const leftover of fs.readdirSync(SHARES_DIR)) {
+      fs.rmSync(path.join(SHARES_DIR, leftover), { recursive: true, force: true });
+    }
+  } catch {
+    // best-effort
+  }
+
+  const lines = [
+    `closed_count: ${tokens.size}`,
+    tokens.size === 0
+      ? "No active shares to close."
+      : `Revoked ${tokens.size} share${tokens.size === 1 ? "" : "s"}. Existing /share links will 404.`,
+  ];
+  if (errors.length) {
+    lines.push(`errors: ${errors.join("; ")}`);
+  }
+  lines.push(
+    "",
+    JSON.stringify({
+      closedCount: tokens.size,
+      tokens: [...tokens],
+      errors,
+    }),
+  );
+
+  return textResult(lines.join("\n"), errors.length > 0);
+}
+
+function revokeShareToken(token) {
+  if (!token) return;
+  try {
+    fs.rmSync(path.join(SHARES_DIR, token), { recursive: true, force: true });
+  } catch {
+    // best-effort
+  }
+  try {
+    fs.rmSync(path.join(SHARES_DIR, `${token}.json`), { force: true });
+  } catch {
+    // best-effort
+  }
+}
+
+function listShareMetas() {
+  const results = [];
+  if (!fs.existsSync(SHARES_DIR)) return results;
+  let names;
+  try {
+    names = fs.readdirSync(SHARES_DIR);
+  } catch {
+    return results;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const metaPath = path.join(SHARES_DIR, name);
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+      const token =
+        typeof meta.token === "string" && meta.token
+          ? meta.token
+          : name.slice(0, -".json".length);
+      results.push({ meta, metaPath, token });
+    } catch {
+      // skip corrupt
+    }
+  }
+  return results;
+}
+
+function findActiveShareForSource(sourcePath) {
+  const now = Date.now();
+  let best = null;
+  for (const entry of listShareMetas()) {
+    const { meta, token } = entry;
+    if (meta.sourcePath !== sourcePath) continue;
+    const expiresAtMs = Date.parse(meta.expiresAt);
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now) continue;
+    const remainingSeconds = Math.floor((expiresAtMs - now) / 1000);
+    if (!best || remainingSeconds > best.remainingSeconds) {
+      best = { ...entry, remainingSeconds, expiresAtMs };
+    }
+  }
+  return best;
+}
+
+function buildShareResult({
+  url,
+  token,
+  filename,
+  contentType,
+  sizeBytes,
+  createdAt,
+  expiresAt,
+  expiresInSeconds,
+  reused,
+}) {
+  const summary = [
+    `url: ${url}`,
+    `token: ${token}`,
+    `filename: ${filename}`,
+    `content_type: ${contentType}`,
+    `size_bytes: ${sizeBytes}`,
+    `created_at: ${createdAt}`,
+    `expires_at: ${expiresAt}`,
+    `expires_in_seconds: ${expiresInSeconds}`,
+    `reused: ${reused ? "true" : "false"}`,
+    "",
+    JSON.stringify({
+      url,
+      token,
+      filename,
+      contentType,
+      sizeBytes,
+      createdAt,
+      expiresAt,
+      expiresInSeconds,
+      reused: Boolean(reused),
+    }),
+  ].join("\n");
+  return textResult(summary);
+}
+
 async function shareFile(args) {
   cleanupExpiredShares();
 
@@ -387,6 +558,31 @@ async function shareFile(args) {
     filename = "file";
   }
 
+  const existing = findActiveShareForSource(sourcePath);
+  if (existing) {
+    if (existing.remainingSeconds > SHARE_REUSE_MIN_REMAINING_SECONDS) {
+      const baseUrl = resolvePublicBaseUrl();
+      const url = `${baseUrl}/share/${existing.token}/${encodeURIComponent(existing.meta.filename || filename)}`;
+      const createdAt =
+        typeof existing.meta.createdAt === "string"
+          ? existing.meta.createdAt
+          : new Date(existing.expiresAtMs - SHARE_TTL_SECONDS * 1000).toISOString();
+      return buildShareResult({
+        url,
+        token: existing.token,
+        filename: existing.meta.filename || filename,
+        contentType: existing.meta.contentType || guessContentType(filename),
+        sizeBytes: stat.size,
+        createdAt,
+        expiresAt: existing.meta.expiresAt,
+        expiresInSeconds: existing.remainingSeconds,
+        reused: true,
+      });
+    }
+    // Under 5 minutes remaining — revoke and remint.
+    revokeShareToken(existing.token);
+  }
+
   const token = randomBytes(32).toString("hex");
   const shareDir = path.join(SHARES_DIR, token);
   const destPath = path.join(shareDir, filename);
@@ -403,6 +599,7 @@ async function shareFile(args) {
       token,
       filename,
       contentType,
+      sourcePath,
       createdAt: createdAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
     };
@@ -420,29 +617,17 @@ async function shareFile(args) {
   const baseUrl = resolvePublicBaseUrl();
   const url = `${baseUrl}/share/${token}/${encodeURIComponent(filename)}`;
 
-  const summary = [
-    `url: ${url}`,
-    `token: ${token}`,
-    `filename: ${filename}`,
-    `content_type: ${contentType}`,
-    `size_bytes: ${stat.size}`,
-    `created_at: ${createdAt.toISOString()}`,
-    `expires_at: ${expiresAt.toISOString()}`,
-    `expires_in_seconds: ${SHARE_TTL_SECONDS}`,
-    "",
-    JSON.stringify({
-      url,
-      token,
-      filename,
-      contentType,
-      sizeBytes: stat.size,
-      createdAt: createdAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      expiresInSeconds: SHARE_TTL_SECONDS,
-    }),
-  ].join("\n");
-
-  return textResult(summary);
+  return buildShareResult({
+    url,
+    token,
+    filename,
+    contentType,
+    sizeBytes: stat.size,
+    createdAt: createdAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    expiresInSeconds: SHARE_TTL_SECONDS,
+    reused: false,
+  });
 }
 
 async function connectCuaClient() {
@@ -513,6 +698,9 @@ async function main() {
     }
     if (name === "ultragateway_share_file") {
       return await shareFile(args ?? {});
+    }
+    if (name === "ultragateway_close_shares") {
+      return await closeAllShares();
     }
 
     if (!cuaClient) {
