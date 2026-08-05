@@ -97,7 +97,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         notificationWatcher = NotificationQueueWatcher(supportDir: monitor.supportDir)
         notificationWatcher?.start()
         setupStatusItem()
@@ -106,6 +105,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.handleStatusItemVisibilityFallback()
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        monitor.refreshNotificationStatus()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -146,6 +149,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(makeItem("Copy MCP URL for Poke", action: #selector(copyPublicURL)))
         } else {
             addDisabledItem("No public URL yet", to: menu)
+        }
+
+        if !monitor.notificationsEnabled {
+            menu.addItem(.separator())
+            menu.addItem(makeItem("Notifications Disabled", action: #selector(enableNotifications)))
         }
 
         menu.addItem(.separator())
@@ -190,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func copyPublicURL() { monitor.copyPublicURL() }
+    @objc private func enableNotifications() { monitor.requestNotificationAccess() }
     @objc private func openPokeIntegrations() { monitor.openPokeIntegrations() }
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
@@ -226,6 +235,7 @@ final class GatewayMonitor: ObservableObject {
     @Published var gatewayStatus: ServiceStatus = .unknown
     @Published var tunnelStatus: ServiceStatus = .unknown
     @Published var publicMcpURL: String?
+    @Published var notificationsEnabled = true
 
     let supportDir: URL
     private let publicURLFile: URL
@@ -268,6 +278,39 @@ final class GatewayMonitor: ObservableObject {
 
         if Self.localGatewayHealthy(port: gatewayPort) {
             gatewayStatus = .running
+        }
+
+        refreshNotificationStatus()
+    }
+
+    func refreshNotificationStatus() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let enabled = settings.authorizationStatus == .authorized
+                    && settings.alertSetting == .enabled
+                if self.notificationsEnabled != enabled {
+                    self.notificationsEnabled = enabled
+                }
+            }
+        }
+    }
+
+    func requestNotificationAccess() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch settings.authorizationStatus {
+                case .notDetermined:
+                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+                        self.refreshNotificationStatus()
+                    }
+                case .authorized where settings.alertSetting == .enabled:
+                    self.refreshNotificationStatus()
+                default:
+                    self.openNotificationSettings()
+                }
+            }
         }
     }
 
@@ -401,6 +444,19 @@ final class GatewayMonitor: ObservableObject {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func openNotificationSettings() {
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.ultragateway.em"
+        let candidates = [
+            "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleID)",
+            "x-apple.systempreferences:com.apple.preference.notifications?id=\(bundleID)",
+        ]
+        for urlString in candidates {
+            if let url = URL(string: urlString), NSWorkspace.shared.open(url) {
+                return
+            }
+        }
     }
 
     private func postNotification(title: String, subtitle: String? = nil, body: String) {
