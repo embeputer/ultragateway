@@ -171,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let url = monitor.publicMcpURL {
             addDisabledItem(url, to: menu)
-            menu.addItem(makeItem("Copy MCP URL for Poke", action: #selector(copyPublicURL)))
+            menu.addItem(makeItem("Copy MCP URL", action: #selector(copyPublicURL)))
         } else {
             addDisabledItem("No public URL yet", to: menu)
         }
@@ -183,13 +183,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        menu.addItem(makeItem("Open Poke Integrations", action: #selector(openPokeIntegrations)))
-        let settingsItem = makeItem("Open Settings", action: #selector(openSettings))
-        settingsItem.keyEquivalent = ","
-        menu.addItem(settingsItem)
-        menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway)))
-        menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel)))
-        menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates)))
+        menu.addItem(makeItem("Open Settings", action: #selector(openSettings), symbolName: "gearshape", keyEquivalent: ","))
+        menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway), symbolName: "arrow.clockwise"))
+        menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel), symbolName: "network"))
+        menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates), symbolName: "arrow.down.circle"))
 
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit ultragateway Menu", action: #selector(quit)))
@@ -203,9 +200,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item)
     }
 
-    private func makeItem(_ title: String, action: Selector) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func makeItem(
+        _ title: String,
+        action: Selector,
+        symbolName: String? = nil,
+        keyEquivalent: String = ""
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = self
+        if let symbolName {
+            let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+            image?.isTemplate = true
+            item.image = image
+        }
         return item
     }
 
@@ -227,7 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func copyPublicURL() { monitor.copyPublicURL() }
     @objc private func enableNotifications() { monitor.requestNotificationAccess() }
-    @objc private func openPokeIntegrations() { monitor.openPokeIntegrations() }
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
     @objc private func checkForUpdates() { monitor.checkForUpdates() }
@@ -240,7 +246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: hosting)
             window.title = "ultragateway Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
-            window.setContentSize(NSSize(width: 440, height: 520))
+            window.setContentSize(NSSize(width: 480, height: 580))
             window.center()
             window.isReleasedWhenClosed = false
             window.delegate = self
@@ -271,90 +277,313 @@ struct UltragatewayMenuBarApp: App {
 
 struct SettingsView: View {
     @ObservedObject var monitor: GatewayMonitor
+    @State private var appeared = false
+    @State private var copiedFlash = false
+
+    private let ink = Color(red: 0.07, green: 0.10, blue: 0.14)
+    private let mist = Color(red: 0.86, green: 0.92, blue: 0.94)
+    private let teal = Color(red: 0.10, green: 0.62, blue: 0.58)
+    private let deepTeal = Color(red: 0.04, green: 0.28, blue: 0.32)
 
     var body: some View {
-        Form {
-            Section("Status") {
-                ServiceStatusRow(label: "Gateway", status: monitor.gatewayStatus)
-                ServiceStatusRow(label: "Tunnel", status: monitor.tunnelStatus)
+        ZStack {
+            background
 
-                LabeledContent("Public MCP URL") {
-                    if let url = monitor.publicMcpURL {
-                        HStack {
-                            Text(url)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                            Button("Copy") {
-                                monitor.copyPublicURL()
-                            }
-                        }
-                    } else {
-                        Text("No public URL yet")
-                            .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    brandHero
+                    statusGlass
+                    if !monitor.notificationsEnabled {
+                        notificationsGlass
                     }
+                    actionsGlass
                 }
-            }
-
-            Section("Notifications") {
-                LabeledContent("Permission") {
-                    HStack {
-                        Image(systemName: monitor.notificationsEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(monitor.notificationsEnabled ? .green : .orange)
-                        Text(monitor.notificationsEnabled ? "Enabled" : "Disabled")
-                    }
-                }
-
-                if !monitor.notificationsEnabled {
-                    Button("Enable Notifications…") {
-                        monitor.requestNotificationAccess()
-                    }
-                }
-            }
-
-            Section("Actions") {
-                Button("Open Poke Integrations") {
-                    monitor.openPokeIntegrations()
-                }
-                Button("Check for Updates") {
-                    monitor.checkForUpdates()
-                }
-                Button("Open Logs Folder") {
-                    monitor.openLogsFolder()
-                }
-                Button("Open Support Folder") {
-                    monitor.openSupportFolder()
-                }
-            }
-
-            Section("Services") {
-                Button("Restart Gateway") {
-                    monitor.restartGateway()
-                }
-                Button("Restart Tunnel") {
-                    monitor.restartTunnel()
-                }
+                .padding(22)
+                .opacity(appeared ? 1 : 0)
+                .offset(y: appeared ? 0 : 10)
             }
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 460, minHeight: 420)
-        .onAppear { monitor.refresh() }
+        .frame(minWidth: 480, minHeight: 560)
+        .onAppear {
+            monitor.refresh()
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) {
+                appeared = true
+            }
+        }
+    }
+
+    private var background: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 0.93, green: 0.96, blue: 0.97),
+                    Color(red: 0.78, green: 0.88, blue: 0.90),
+                    Color(red: 0.70, green: 0.82, blue: 0.86),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+
+            Circle()
+                .fill(teal.opacity(0.28))
+                .frame(width: 260, height: 260)
+                .blur(radius: 48)
+                .offset(x: 170, y: -120)
+
+            Circle()
+                .fill(deepTeal.opacity(0.18))
+                .frame(width: 220, height: 220)
+                .blur(radius: 42)
+                .offset(x: -160, y: 220)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var brandHero: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("ultragateway")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [ink, deepTeal],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .shadow(color: .white.opacity(0.55), radius: 0, y: 1)
+
+            Text("Local MCP gateway · tunnel · notifications")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+    }
+
+    private var statusGlass: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Status")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.45))
+                .textCase(.uppercase)
+                .tracking(1.1)
+
+            HStack(spacing: 12) {
+                statusChip(title: "Gateway", status: monitor.gatewayStatus)
+                statusChip(title: "Tunnel", status: monitor.tunnelStatus)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Public MCP URL")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.45))
+
+                HStack(spacing: 10) {
+                    if let url = monitor.publicMcpURL {
+                        Text(url)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(ink.opacity(0.85))
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            monitor.copyPublicURL()
+                            withAnimation(.easeOut(duration: 0.2)) { copiedFlash = true }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                withAnimation { copiedFlash = false }
+                            }
+                        } label: {
+                            Text(copiedFlash ? "Copied" : "Copy")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(copiedFlash ? teal.opacity(0.9) : ink.opacity(0.88), in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text("No public URL yet")
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(ink.opacity(0.4))
+                    }
+                }
+                .padding(12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+                )
+            }
+        }
+        .padding(18)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(glassStroke(radius: 22))
+        .shadow(color: deepTeal.opacity(0.12), radius: 18, y: 8)
+    }
+
+    private var notificationsGlass: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: "bell.badge")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(teal)
+                .frame(width: 40, height: 40)
+                .background(.ultraThinMaterial, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Notifications off")
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink)
+                Text("Enable so gateway events show up in Notification Center.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(ink.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("Enable") {
+                monitor.requestNotificationAccess()
+            }
+            .buttonStyle(GlassAccentButtonStyle(teal: teal))
+        }
+        .padding(16)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(glassStroke(radius: 20))
+        .shadow(color: deepTeal.opacity(0.10), radius: 14, y: 6)
+    }
+
+    private var actionsGlass: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Controls")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.45))
+                .textCase(.uppercase)
+                .tracking(1.1)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                actionTile(title: "Restart Gateway", symbol: "arrow.clockwise") {
+                    monitor.restartGateway()
+                }
+                actionTile(title: "Restart Tunnel", symbol: "network") {
+                    monitor.restartTunnel()
+                }
+                actionTile(title: "Check Updates", symbol: "arrow.down.circle") {
+                    monitor.checkForUpdates()
+                }
+                actionTile(title: "Open Logs", symbol: "doc.text") {
+                    monitor.openLogsFolder()
+                }
+            }
+
+            Button {
+                monitor.openSupportFolder()
+            } label: {
+                HStack {
+                    Image(systemName: "folder")
+                    Text("Open Support Folder")
+                    Spacer()
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .opacity(0.5)
+                }
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(ink.opacity(0.75))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.white.opacity(0.4), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(18)
+        .background(glassFill, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(glassStroke(radius: 22))
+        .shadow(color: deepTeal.opacity(0.10), radius: 16, y: 7)
+    }
+
+    private func statusChip(title: String, status: ServiceStatus) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(ink.opacity(0.5))
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 9, height: 9)
+                    .shadow(color: status.color.opacity(0.55), radius: 4)
+                Text(status.label)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+        )
+    }
+
+    private func actionTile(title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(teal)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ink)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
+            .padding(14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.45), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var glassFill: some ShapeStyle {
+        .ultraThinMaterial
+    }
+
+    private func glassStroke(radius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.65), .white.opacity(0.15), teal.opacity(0.25)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1.2
+            )
     }
 }
 
-private struct ServiceStatusRow: View {
-    let label: String
-    let status: ServiceStatus
+private struct GlassAccentButtonStyle: ButtonStyle {
+    let teal: Color
 
-    var body: some View {
-        LabeledContent(label) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(status.color)
-                    .frame(width: 8, height: 8)
-                Text(status.label)
-            }
-        }
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                LinearGradient(colors: [teal, teal.opacity(0.75)], startPoint: .top, endPoint: .bottom),
+                in: Capsule()
+            )
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
     }
 }
 
@@ -488,12 +717,6 @@ final class GatewayMonitor: ObservableObject {
         guard let url = publicMcpURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
-    }
-
-    func openPokeIntegrations() {
-        if let url = URL(string: "https://poke.com/integrations/new") {
-            NSWorkspace.shared.open(url)
-        }
     }
 
     func openLogsFolder() {
