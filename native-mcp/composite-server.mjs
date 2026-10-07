@@ -43,6 +43,8 @@ const SHARE_MAX_BYTES = (() => {
 const SHARE_REUSE_MIN_REMAINING_SECONDS = 300;
 
 const NOTIFY_QUEUE = path.join(SUPPORT_DIR, "notify-queue.jsonl");
+const NOTIFY_STATUS = path.join(SUPPORT_DIR, "notify-status.json");
+const NOTIFY_STATUS_MAX_AGE_MS = 60_000;
 const AGENT_COVER_CMD_QUEUE = path.join(SUPPORT_DIR, "agent-cover-cmd.jsonl");
 const AGENT_COVER_STATE = path.join(SUPPORT_DIR, "agent-cover-state.json");
 const SHARES_DIR = path.join(SUPPORT_DIR, "shares");
@@ -95,7 +97,7 @@ const NATIVE_TOOLS = [
   {
     name: "ultragateway_notify",
     description:
-      "Show a macOS notification branded as ultragateway (Notification Center). Requires the ultragateway menu bar app for the app icon.",
+      "Show a macOS notification branded as ultragateway (Notification Center). Requires the ultragateway menu bar app for the app icon. Returns an error if macOS notifications are off or delivery failed; in that case reach the user another way.",
     inputSchema: {
       type: "object",
       properties: {
@@ -284,6 +286,19 @@ async function osascriptNotify(title, message, subtitle) {
   });
 }
 
+function readNotifyStatus() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(NOTIFY_STATUS, "utf8"));
+    const updatedAt = Number(raw?.updatedAt);
+    if (typeof raw?.enabled !== "boolean" || !Number.isFinite(updatedAt)) return null;
+    const age = Date.now() - updatedAt;
+    if (age < 0 || age >= NOTIFY_STATUS_MAX_AGE_MS) return null;
+    return { enabled: raw.enabled, updatedAt };
+  } catch {
+    return null;
+  }
+}
+
 async function queueNotification(entry) {
   fs.mkdirSync(SUPPORT_DIR, { recursive: true });
   fs.appendFileSync(NOTIFY_QUEUE, `${JSON.stringify(entry)}\n`, "utf8");
@@ -403,6 +418,15 @@ async function notify(args) {
   const title = String(args?.title ?? "ultragateway").trim() || "ultragateway";
   const subtitle = args?.subtitle ? String(args.subtitle).trim() : "";
 
+  const hasMenubar = await menubarRunning();
+  if (hasMenubar && readNotifyStatus()?.enabled === false) {
+    return textResult(
+      "notifications off: macOS notifications for ultragateway are disabled, so nothing was delivered. " +
+        "Reach the user another way (e.g. reply in chat) instead of assuming they saw it.",
+      true,
+    );
+  }
+
   const entry = {
     id: randomUUID(),
     title,
@@ -413,18 +437,24 @@ async function notify(args) {
 
   await queueNotification(entry);
 
-  const hasMenubar = await menubarRunning();
   if (hasMenubar) {
-  } else {
-    await osascriptNotify(title, message, subtitle);
+    return textResult(
+      `Notification queued (id: ${entry.id}). ultragateway menu bar app will display it.`,
+    );
+  }
+
+  const delivered = await osascriptNotify(title, message, subtitle);
+  if (!delivered) {
+    return textResult(
+      "not delivered: the menu bar app is not running and the osascript notification fallback failed. " +
+        "Reach the user another way instead of assuming they saw it.",
+      true,
+    );
   }
 
   return textResult(
-    `Notification queued (id: ${entry.id}).${
-      hasMenubar
-        ? " ultragateway menu bar app will display it."
-        : " Menu bar app not running — sent via system notification fallback."
-    }`,
+    `Notification queued (id: ${entry.id}). Menu bar app not running — sent via system notification fallback; ` +
+      "delivery can't be confirmed (macOS may suppress it silently).",
   );
 }
 
