@@ -25,6 +25,8 @@ final class AgentCoverController: ObservableObject {
     /// Ignore HID briefly after arming so residual agent events don't trip the lock.
     private var armedAt: Date?
     private let armGracePeriod: TimeInterval = 0.35
+    /// Agents may retry cover-start; only open the Input Monitoring prompt/pane once per run.
+    private var didPromptInputMonitoring = false
 
     private let stateFileName = "agent-cover-state.json"
 
@@ -61,7 +63,10 @@ final class AgentCoverController: ObservableObject {
         // Without Input Monitoring the tap never sees human input, so the cover would
         // promise a lock it can't deliver. Refuse and prompt instead.
         guard CGPreflightListenEventAccess() else {
-            Self.requestInputMonitoringAccess()
+            if !didPromptInputMonitoring {
+                didPromptInputMonitoring = true
+                Self.requestInputMonitoringAccess()
+            }
             writeState(active: false)
             return
         }
