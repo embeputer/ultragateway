@@ -214,11 +214,7 @@ migrate_config_env() {
 
 same_path() {
   local a="$1" b="$2"
-  [[ -e "$a" && -e "$b" ]] || return 1
-  local ca cb
-  ca="$(cd "$(dirname "$a")" && pwd -P)/$(basename "$a")"
-  cb="$(cd "$(dirname "$b")" && pwd -P)/$(basename "$b")"
-  [[ "$ca" == "$cb" ]]
+  [[ -e "$a" && -e "$b" && "$a" -ef "$b" ]]
 }
 
 migrate_launch_agents() {
@@ -378,7 +374,8 @@ fi
 LAUNCHD_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 add_path_dir() {
   local dir="$1"
-  [[ -n "$dir" && -d "$dir" ]] && LAUNCHD_PATH="${dir}:${LAUNCHD_PATH}"
+  [[ -n "$dir" && -d "$dir" ]] || return 0
+  LAUNCHD_PATH="${dir}:${LAUNCHD_PATH}"
 }
 
 for extra in \
