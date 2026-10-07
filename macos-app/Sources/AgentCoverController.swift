@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 import SwiftUI
+import UserNotifications
 
 // MARK: - AgentCoverController
 
@@ -55,6 +56,13 @@ final class AgentCoverController: ObservableObject {
     private func startCoverOnMain() {
         guard !isActive else {
             writeState(active: true)
+            return
+        }
+        // Without Input Monitoring the tap never sees human input, so the cover would
+        // promise a lock it can't deliver. Refuse and prompt instead.
+        guard CGPreflightListenEventAccess() else {
+            Self.requestInputMonitoringAccess()
+            writeState(active: false)
             return
         }
         isActive = true
@@ -271,6 +279,20 @@ final class AgentCoverController: ObservableObject {
         }
 
         return true
+    }
+
+    private static func requestInputMonitoringAccess() {
+        CGRequestListenEventAccess()
+        let content = UNMutableNotificationContent()
+        content.title = "ultragateway"
+        content.subtitle = "Agent cover"
+        content.body = "Cover not started: allow ultragateway under Input Monitoring so touching the keyboard or trackpad can lock this Mac."
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "ultragateway.cover.permission", content: content, trigger: nil)
+        )
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Lock screen
