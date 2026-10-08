@@ -1,0 +1,130 @@
+name: Build & Release macOS App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ultragateway-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  SPARKLE_VERSION: "2.8.1"
+  REPO_SLUG: embeputer/ultragateway
+  APPCAST_ASSET: appcast.xml
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute versions
+        run: |
+          SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' ultragateway.app/Contents/Info.plist)"
+          BUILD="$(git rev-list --count HEAD)"
+          echo "APP_SHORT_VERSION=${SHORT}" >> "$GITHUB_ENV"
+          echo "APP_BUILD_VERSION=${BUILD}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v${SHORT}-${BUILD}" >> "$GITHUB_ENV"
+          echo "APP_ZIP=ultragateway-${SHORT}-${BUILD}.zip" >> "$GITHUB_ENV"
+          echo "APP_DMG=ultragateway-${SHORT}-${BUILD}.dmg" >> "$GITHUB_ENV"
+          echo "SOURCE_ZIP=ultragateway-source-${SHORT}-${BUILD}.zip" >> "$GITHUB_ENV"
+          echo "release: tag=v${SHORT}-${BUILD} build=${BUILD}"
+
+      - name: Require Sparkle signing secret
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [[ -z "${SPARKLE_PRIVATE_KEY// }" ]]; then
+            echo "::error::Missing GitHub Actions secret SPARKLE_PRIVATE_KEY."
+            echo "::error::It is the base64 Ed25519 seed for Sparkle update signing (public key is baked into Info.plist as SUPublicEDKey)."
+            echo "::error::Set it under Settings → Secrets and variables → Actions, then re-run this workflow."
+            exit 1
+          fi
+
+      - name: Build app bundle
+        run: ./macos-app/build.sh --universal
+
+      - name: Fetch Sparkle tools
+        run: |
+          curl -fsSL -o /tmp/sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle-tools"
+          tar -xf /tmp/sparkle.tar.xz -C "$RUNNER_TEMP/sparkle-tools"
+
+      - name: Package release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist dmg-staging
+
+          # Sparkle archive: signed app zip (keepParent so ultragateway.app sits at zip root).
+          ditto -c -k --sequesterRsrc --keepParent ultragateway.app "dist/${APP_ZIP}"
+
+          # First-install DMG: app + Applications shortcut.
+          ditto ultragateway.app "dmg-staging/ultragateway.app"
+          ln -s /Applications "dmg-staging/Applications"
+          hdiutil create -format UDZO -volname ultragateway \
+            -srcfolder dmg-staging -ov "dist/${APP_DMG}"
+
+          # Full source snapshot for people who install via ./install.sh.
+          git archive -o "dist/${SOURCE_ZIP}" HEAD
+
+      - name: Sign update for appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          SIGN_OUT="$(echo "$SPARKLE_PRIVATE_KEY" | tr -d '[:space:]' \
+            | "$RUNNER_TEMP/sparkle-tools/bin/sign_update" --ed-key-file - "dist/${APP_ZIP}")"
+          echo "$SIGN_OUT"
+          ED="$(printf '%s' "$SIGN_OUT" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' | head -1)"
+          LEN="$(printf '%s' "$SIGN_OUT" | sed -n 's/.*length="\([0-9]*\)".*/\1/p' | head -1)"
+          [[ -n "$ED" && -n "$LEN" ]] || { echo "::error::Could not parse sign_update output"; exit 1; }
+          echo "ED_SIGNATURE=${ED}" >> "$GITHUB_ENV"
+          echo "ZIP_LENGTH=${LEN}" >> "$GITHUB_ENV"
+
+      - name: Generate appcast + release notes
+        env:
+          APPCAST_OUT: dist/appcast.xml
+          RELEASE_NOTES_URL: https://github.com/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}
+          ED_SIGNATURE: ${{ env.ED_SIGNATURE }}
+          ZIP_LENGTH: ${{ env.ZIP_LENGTH }}
+          APP_SHORT_VERSION: ${{ env.APP_SHORT_VERSION }}
+          APP_BUILD_VERSION: ${{ env.APP_BUILD_VERSION }}
+          APP_ZIP: ${{ env.APP_ZIP }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          REPO: ${{ env.REPO_SLUG }}
+        run: |
+          set -euo pipefail
+          python3 scripts/generate-appcast.py
+          {
+            echo "## ultragateway ${APP_SHORT_VERSION} (build ${APP_BUILD_VERSION})"
+            echo
+            echo "**${RELEASE_TAG}** — automated build of \`main\` at ${GITHUB_SHA:0:8}."
+            echo
+            echo "App installs check this feed automatically via Sparkle every 6h."
+            echo
+            echo "### Fresh install"
+            echo "- \`${APP_ZIP}\` or \`${APP_DMG}\` — drag to /Applications (unsigned: \`xattr -dr com.apple.quarantine /Applications/ultragateway.app\` if Gatekeeper complains), then use menu → Install Background Service"
+            echo "- \`${SOURCE_ZIP}\` — classic \`./install.sh\` install (LaunchAgents + scripts + app)"
+          } > dist/RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body_path: dist/RELEASE_NOTES.md
+          files: |
+            dist/${{ env.APP_ZIP }}
+            dist/${{ env.APP_DMG }}
+            dist/${{ env.SOURCE_ZIP }}
+            dist/appcast.xml
+          make_latest: true

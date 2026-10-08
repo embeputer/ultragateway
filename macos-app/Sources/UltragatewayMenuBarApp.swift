@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import IOKit.pwr_mgt
 import Security
+import Sparkle
 import UserNotifications
 
 // MARK: - KeepAwakeController
@@ -190,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         setupStatusItem()
         observeMonitor()
+        monitor.refreshServicesIfNeeded()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.handleStatusItemVisibilityFallback()
@@ -261,6 +263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(makeItem("Restart Gateway", action: #selector(restartGateway), symbolName: "arrow.clockwise"))
         menu.addItem(makeItem("Restart Tunnel", action: #selector(restartTunnel), symbolName: "network"))
         menu.addItem(makeItem("Check for Updates", action: #selector(checkForUpdates), symbolName: "arrow.down.circle"))
+        if !monitor.servicesInstalled {
+            menu.addItem(makeItem("Install Background Service", action: #selector(installBackgroundService), symbolName: "plus.app"))
+        }
 
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit ultragateway Menu", action: #selector(quit)))
@@ -312,6 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func restartGateway() { monitor.restartGateway() }
     @objc private func restartTunnel() { monitor.restartTunnel() }
     @objc private func checkForUpdates() { monitor.checkForUpdates() }
+    @objc private func installBackgroundService() { monitor.installBackgroundService() }
     @objc private func openSettings() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -936,8 +942,15 @@ final class GatewayMonitor: ObservableObject {
     @Published var keepAwakeEnabled = false
     @Published var agentCoverEnabled = true
     @Published var agentCoverActive = false
+    @Published var servicesInstalled = false
+    @Published var serviceRefreshInProgress = false
 
     let supportDir: URL
+    let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
     private let keepAwakeController = KeepAwakeController()
     private let publicURLFile: URL
     private let restartScript: URL
@@ -946,6 +959,15 @@ final class GatewayMonitor: ObservableObject {
     private let tunnelLabel: String
     private let gatewayPort: Int
     private var timer: Timer?
+
+    private var gatewayAgentPlist: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(gatewayLabel).plist")
+    }
+
+    private var installedVersionMarker: URL {
+        supportDir.appendingPathComponent("installed-app-version.txt")
+    }
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -973,6 +995,7 @@ final class GatewayMonitor: ObservableObject {
     }
 
     func refresh() {
+        servicesInstalled = FileManager.default.fileExists(atPath: gatewayAgentPlist.path)
         gatewayStatus = Self.launchdRunning(label: gatewayLabel)
             ? .running
             : .stopped
@@ -1316,31 +1339,73 @@ final class GatewayMonitor: ObservableObject {
     }
 
     func checkForUpdates() {
-        let script = supportDir.appendingPathComponent("auto-update.sh")
-        guard FileManager.default.fileExists(atPath: script.path) else {
-            postNotification(title: "ultragateway", subtitle: "Update", body: "Update script missing. Run install.sh from the ultragateway repo.")
+        updaterController.checkForUpdates(nil)
+    }
+
+    /// After the app bundle itself is updated (Sparkle), the LaunchAgent scripts and
+    /// service files may still be on the older build. Each release carries an installer
+    /// payload in Contents/Resources/installer; run it service-only when the version
+    /// marker no longer matches this build. install.sh writes the same marker when it
+    /// runs a full install, so this only fires once per app version.
+    func refreshServicesIfNeeded() {
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        guard servicesInstalled, !appVersion.isEmpty else { return }
+        let stored = (try? String(contentsOf: installedVersionMarker, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard stored != appVersion else { return }
+        runBundledInstaller(completionMessage: "Services updated to build \(appVersion).")
+    }
+
+    /// Install LaunchAgents + run scripts for an app that was installed by dropping
+    /// the bundle into /Applications (no repo clone required — payload is bundled).
+    func installBackgroundService() {
+        runBundledInstaller(completionMessage: "Background service installed. Gateway starts at login.")
+    }
+
+    private func runBundledInstaller(completionMessage: String) {
+        guard !serviceRefreshInProgress else { return }
+        guard let resources = Bundle.main.resourceURL else { return }
+        let installer = resources.appendingPathComponent("installer/install.sh")
+        guard FileManager.default.fileExists(atPath: installer.path) else {
+            postNotification(
+                title: "ultragateway",
+                subtitle: "Update",
+                body: "Bundled installer missing — reinstall from the latest ultragateway release."
+            )
             return
         }
-        postNotification(title: "ultragateway", subtitle: "Update", body: "Checking for updates…")
+
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        let logsDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/ultragateway")
+        serviceRefreshInProgress = true
+        postNotification(title: "ultragateway", subtitle: "Update", body: "Syncing gateway services…")
+
         DispatchQueue.global(qos: .utility).async {
-            let ok = self.runShell("\(self.shellQuote(script.path))")
+            let command = "mkdir -p \(self.shellQuote(logsDir.path)) && "
+                + "INSTALL_APP_BUNDLE=0 ULTRAGATEWAY_APP_VERSION_STAMP=\(self.shellQuote(appVersion)) "
+                + "bash \(self.shellQuote(installer.path)) >> \(self.shellQuote(logsDir.appendingPathComponent("install.log").path)) 2>&1"
+            let ok = self.runShell(command)
             DispatchQueue.main.async {
+                self.serviceRefreshInProgress = false
                 if ok {
-                    self.postNotification(
-                        title: "ultragateway",
-                        subtitle: "Update",
-                        body: "Update check finished. See ~/Library/Logs/ultragateway/update.log."
-                    )
+                    self.writeInstalledVersionMarker(appVersion)
+                    self.postNotification(title: "ultragateway", subtitle: "Update", body: completionMessage)
                 } else {
                     self.postNotification(
                         title: "ultragateway",
                         subtitle: "Update",
-                        body: "Update check failed. See ~/Library/Logs/ultragateway/update.log."
+                        body: "Service refresh failed. See ~/Library/Logs/ultragateway/install.log."
                     )
                 }
                 self.refresh()
             }
         }
+    }
+
+    private func writeInstalledVersionMarker(_ version: String) {
+        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        try? "\(version)\n".write(to: installedVersionMarker, atomically: true, encoding: .utf8)
     }
 
     private func restartService(label: String, displayName: String) {
