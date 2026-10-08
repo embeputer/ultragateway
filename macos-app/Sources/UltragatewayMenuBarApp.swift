@@ -1135,8 +1135,19 @@ final class GatewayMonitor: ObservableObject {
                 if self.notificationsEnabled != enabled {
                     self.notificationsEnabled = enabled
                 }
+                self.writeNotificationStatus(enabled: enabled)
             }
         }
+    }
+
+    private func writeNotificationStatus(enabled: Bool) {
+        let payload: [String: Any] = [
+            "enabled": enabled,
+            "updatedAt": Int64(Date().timeIntervalSince1970 * 1000),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        try? data.write(to: supportDir.appendingPathComponent("notify-status.json"), options: .atomic)
     }
 
     func requestNotificationAccess() {
