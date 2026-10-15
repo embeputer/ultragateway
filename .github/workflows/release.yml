@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 env:
-  SPARKLE_VERSION: "2.8.1"
+  SPARKLE_VERSION: "2.10.0"
   REPO_SLUG: embeputer/ultragateway
   APPCAST_ASSET: appcast.xml
 
