@@ -7,6 +7,10 @@ REPO_ROOT="$SCRIPT_DIR"
 
 APP_NAME="ultragateway"
 APP_BUNDLE="/Applications/${APP_NAME}.app"
+# INSTALL_APP_BUNDLE=0 runs a "service refresh": scripts/LaunchAgents/native-mcp only.
+# The menu bar app invokes this from its bundled installer payload after a Sparkle
+# update so services track the app build without replacing the running bundle.
+INSTALL_APP_BUNDLE="${INSTALL_APP_BUNDLE:-1}"
 SUPPORT_DIR="${HOME}/Library/Application Support/ultragateway"
 LOG_DIR="${HOME}/Library/Logs/ultragateway"
 GATEWAY_AGENT="${HOME}/Library/LaunchAgents/com.ultragateway.em.plist"
@@ -344,7 +348,18 @@ ULTRAGATEWAY_REPO_DIR=${REPO_ROOT}
 GITHUB_REPO_URL=${GITHUB_REPO_URL:-https://github.com/embeputer/ultragateway.git}
 EOF
 
-if command -v swift >/dev/null 2>&1; then
+plist_version() {
+  local plist="$1" key="$2"
+  if [[ -x /usr/libexec/PlistBuddy ]]; then
+    /usr/libexec/PlistBuddy -c "Print :${key}" "$plist" 2>/dev/null || true
+  else
+    defaults read "${plist%.plist}" "$key" 2>/dev/null || true
+  fi
+}
+
+if [[ "$INSTALL_APP_BUNDLE" == "0" ]]; then
+  info "Service-refresh mode (INSTALL_APP_BUNDLE=0) — keeping existing ${APP_BUNDLE}"
+elif command -v swift >/dev/null 2>&1; then
   info "Building menu bar app..."
   if "${REPO_ROOT}/macos-app/build.sh"; then
     info "Menu bar app built"
@@ -355,19 +370,34 @@ else
   warn "swift not found — skipping menu bar build (install Xcode CLT for menu bar UI)"
 fi
 
-info "Installing ${APP_BUNDLE}..."
-rm -rf "$APP_BUNDLE"
-cp -R "${REPO_ROOT}/ultragateway.app" "$APP_BUNDLE"
-chmod +x "${APP_BUNDLE}/Contents/MacOS/ultragateway"
-if [[ -x "${REPO_ROOT}/ultragateway.app/Contents/MacOS/ultragateway-menubar" ]]; then
-  chmod +x "${APP_BUNDLE}/Contents/MacOS/ultragateway-menubar"
-else
-  warn "ultragateway-menubar binary missing — open ${APP_BUNDLE} will not show menu bar icon"
-fi
-# Re-sign after copy so UserNotifications can bind CFBundleIdentifier.
-if command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}/Contents/MacOS/ultragateway-menubar" >/dev/null 2>&1 || true
-  codesign --force --deep --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}" >/dev/null 2>&1 || true
+if [[ "$INSTALL_APP_BUNDLE" != "0" && -d "${REPO_ROOT}/ultragateway.app" ]]; then
+  # Never downgrade a newer app (e.g. one installed by Sparkle): CFBundleVersion is
+  # stamped with the git commit count at build time, so compare bundle versions first.
+  REPO_APP_VERSION="$(plist_version "${REPO_ROOT}/ultragateway.app/Contents/Info.plist" CFBundleVersion)"
+  INSTALLED_APP_VERSION="$(plist_version "${APP_BUNDLE}/Contents/Info.plist" CFBundleVersion)"
+  REPO_APP_VERSION="${REPO_APP_VERSION:-0}"
+  INSTALLED_APP_VERSION="${INSTALLED_APP_VERSION:-0}"
+  if [[ -d "$APP_BUNDLE" && "$REPO_APP_VERSION" =~ ^[0-9]+$ && "$INSTALLED_APP_VERSION" =~ ^[0-9]+$ ]] \
+    && (( INSTALLED_APP_VERSION > REPO_APP_VERSION )); then
+    info "Installed app (build ${INSTALLED_APP_VERSION}) is newer than repo build ${REPO_APP_VERSION} — leaving ${APP_BUNDLE} in place"
+  else
+    info "Installing ${APP_BUNDLE}..."
+    rm -rf "$APP_BUNDLE"
+    cp -R "${REPO_ROOT}/ultragateway.app" "$APP_BUNDLE"
+    chmod +x "${APP_BUNDLE}/Contents/MacOS/ultragateway"
+    if [[ -x "${REPO_ROOT}/ultragateway.app/Contents/MacOS/ultragateway-menubar" ]]; then
+      chmod +x "${APP_BUNDLE}/Contents/MacOS/ultragateway-menubar"
+    else
+      warn "ultragateway-menubar binary missing — open ${APP_BUNDLE} will not show menu bar icon"
+    fi
+    # Re-sign after copy so UserNotifications can bind CFBundleIdentifier.
+    if command -v codesign >/dev/null 2>&1; then
+      codesign --force --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}/Contents/MacOS/ultragateway-menubar" >/dev/null 2>&1 || true
+      codesign --force --deep --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}" >/dev/null 2>&1 || true
+    fi
+  fi
+elif [[ "$INSTALL_APP_BUNDLE" != "0" ]]; then
+  warn "No ultragateway.app bundle in ${REPO_ROOT} — skipping app install"
 fi
 
 # Build PATH for launchd (minimal environment)
@@ -499,6 +529,20 @@ end tell
 EOF
 
 PUBLIC_URL="${SUPPORT_DIR}/public-mcp-url.txt"
+
+# Record which app build the services were last synced to. The menu bar app compares
+# this marker against its own CFBundleVersion and re-runs a service refresh after a
+# Sparkle update; when the app itself invoked us it passes the stamp explicitly.
+INSTALLED_VERSION_STAMP="${ULTRAGATEWAY_APP_VERSION_STAMP:-}"
+if [[ -z "$INSTALLED_VERSION_STAMP" ]]; then
+  INSTALLED_VERSION_STAMP="$(plist_version "${REPO_ROOT}/ultragateway.app/Contents/Info.plist" CFBundleVersion)"
+fi
+if [[ -z "$INSTALLED_VERSION_STAMP" && -d "$APP_BUNDLE" ]]; then
+  INSTALLED_VERSION_STAMP="$(plist_version "${APP_BUNDLE}/Contents/Info.plist" CFBundleVersion)"
+fi
+if [[ -n "$INSTALLED_VERSION_STAMP" ]]; then
+  printf '%s\n' "$INSTALLED_VERSION_STAMP" > "${SUPPORT_DIR}/installed-app-version.txt"
+fi
 
 info ""
 info "Installation complete."

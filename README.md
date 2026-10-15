@@ -213,27 +213,76 @@ After changing protection settings, restart the gateway:
 launchctl kickstart -k "gui/$(id -u)/com.ultragateway.em"
 ```
 
-## Auto-updates
+## Releases & auto-updates
 
-When enabled, LaunchAgent `com.ultragateway.em.update` checks GitHub every **6 hours** (configurable) and runs `install.sh` if `main` has new commits.
+Every merge to `main` runs `.github/workflows/release.yml` on a macOS runner: it builds a
+universal `ultragateway.app` (with the Sparkle updater embedded), signs the archive with
+EdDSA, and publishes a GitHub release `v<version>-<build>` containing:
+
+| Asset | Purpose |
+|-------|---------|
+| `ultragateway-<ver>-<build>.zip` | Signed app — what Sparkle downloads |
+| `ultragateway-<ver>-<build>.dmg` | First-install drag-and-drop image |
+| `ultragateway-source-<ver>-<build>.zip` | Full source snapshot for `./install.sh` installs |
+| `appcast.xml` | Sparkle feed (always on the latest release) |
+
+`CFBundleVersion` is stamped with the git commit count, so builds are monotonically
+versioned; `CFBundleShortVersionString` in `ultragateway.app/Contents/Info.plist` is the
+marketing version — bump it when you want a `1.x.0` release.
+
+### How updates reach installed apps
+
+- **App updates (Sparkle)** — the menu bar app checks
+  `github.com/embeputer/ultragateway/releases/latest/download/appcast.xml` every 6h,
+  verifies the EdDSA signature (`SUPublicEDKey` in Info.plist), downloads the zip, and
+  relaunches itself. Menu → **Check for Updates** forces a check.
+- **Service sync** — after the app updates, it re-runs the installer payload bundled in
+  `Contents/Resources/installer` (service-only mode) so LaunchAgents, run scripts, and
+  `native-mcp` match the app build.
+- **Legacy git updater** — `com.ultragateway.em.update` still pulls `main` every 6h and
+  re-runs `install.sh` (keeps service files fresh on source installs, and can install the
+  published app zip on machines without swift — `APP_RELEASE_UPDATE=1` default).
+  `install.sh` never downgrades an app installed by a newer build.
+
+### One-time setup for release signing
+
+Update archives are EdDSA-signed so unsigned apps can verify them. The public key is baked
+into `Info.plist` (`SUPublicEDKey`); the matching private seed must be added to GitHub
+**once** as an Actions secret:
 
 ```bash
-AUTO_UPDATE_ENABLED=1
-AUTO_UPDATE_INTERVAL=21600    # seconds (6h)
-AUTO_UPDATE_BRANCH=main
-GITHUB_REPO_URL=https://github.com/embeputer/ultragateway.git
+# value from sparkle Ed25519 key generation (see PR notes or `generate_keys -x` on a Mac)
+gh secret set SPARKLE_PRIVATE_KEY --repo embeputer/ultragateway < private-seed.txt
 ```
 
-`install.sh` records your clone path in `repo.env`. If you only have the app bundle, auto-update clones into `~/Library/Application Support/ultragateway/source`.
+Without the secret the workflow stops before building with a clear error — no release is
+published and nothing breaks for existing installs.
 
-Manual check: menu bar → **Check for Updates**, or:
+### Install from a release (no repo needed)
+
+1. Download `ultragateway-<ver>-<build>.zip` (or the `.dmg`) from the latest release.
+2. Unzip/drag `ultragateway.app` into `/Applications`. Unsigned build — if Gatekeeper
+   complains: `xattr -dr com.apple.quarantine /Applications/ultragateway.app`.
+3. Open it once, then menu → **Install Background Service** to register the LaunchAgents
+   and run scripts (the installer payload travels inside the app).
+
+```bash
+AUTO_UPDATE_ENABLED=1          # legacy git updater for service files
+AUTO_UPDATE_INTERVAL=21600     # seconds (6h)
+AUTO_UPDATE_BRANCH=main
+GITHUB_REPO_URL=https://github.com/embeputer/ultragateway.git
+APP_RELEASE_UPDATE=1           # install published app zips when newer
+```
+
+Manual service check:
 
 ```bash
 ~/Library/Application\ Support/ultragateway/auto-update.sh
 tail -f ~/Library/Logs/ultragateway/update.log
 ```
 
-Set `AUTO_UPDATE_ENABLED=0` and re-run `install.sh` to disable.
+Set `AUTO_UPDATE_ENABLED=0` and re-run `install.sh` to disable the git updater; Sparkle
+still keeps the app itself current (disable auto-checks in `Info.plist` if unwanted).
 
 ## Usage
 

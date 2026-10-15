@@ -3,3 +3,7 @@ native-mcp/node_modules/
 macos-app/.build/
 .DS_Store
 *.xcuserstate
+dist/
+dmg-staging/
+sparkle-tools/
+*.key
