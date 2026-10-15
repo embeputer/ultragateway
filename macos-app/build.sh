@@ -42,8 +42,13 @@ info "Installing menu bar binary into ${APP_BUNDLE}..."
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 755 "$BINARY" "${MACOS_DIR}/ultragateway-menubar"
 chmod +x "${MACOS_DIR}/ultragateway" 2>/dev/null || true
-# SwiftPM links Sparkle via @rpath; inside a .app bundle it lives in Contents/Frameworks.
-install_name_tool -add_rpath "@executable_path/../Frameworks" "${MACOS_DIR}/ultragateway-menubar" 2>/dev/null || true
+# SwiftPM links Sparkle via @rpath and linker-signs the binary. install_name_tool
+# refuses to edit a signed Mach-O, so strip that signature before adding the
+# Frameworks rpath the bundled Sparkle.framework is loaded from.
+codesign --remove-signature "${MACOS_DIR}/ultragateway-menubar"
+if ! otool -l "${MACOS_DIR}/ultragateway-menubar" | grep -q '@executable_path/../Frameworks'; then
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "${MACOS_DIR}/ultragateway-menubar"
+fi
 
 ASSETS_DIR="${REPO_ROOT}/assets"
 if [[ -f "${ASSETS_DIR}/menubar-18.png" && -f "${ASSETS_DIR}/menubar-36.png" ]]; then
@@ -90,22 +95,29 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --is-inside-w
 fi
 
 info "Ad-hoc signing app bundle (required for notification prompts)..."
-# Sign nested code inside-out: framework helpers, framework, launcher, binary, bundle.
-# SwiftPM linker-signs the binary as "ultragateway-menubar" without binding Info.plist;
-# the bundle-level sign binds Info.plist so UserNotifications sees CFBundleIdentifier.
-if [[ -d "${FRAMEWORKS_DIR}/Sparkle.framework" ]]; then
-  for nested in \
-    "${FRAMEWORKS_DIR}/Sparkle.framework/Versions/B/Autoupdate" \
-    "${FRAMEWORKS_DIR}/Sparkle.framework/Versions/B/Updater.app"; do
-    [[ -e "$nested" ]] && codesign --force --sign - "$nested" >/dev/null 2>&1 || true
-  done
-  codesign --force --sign - "${FRAMEWORKS_DIR}/Sparkle.framework" >/dev/null 2>&1 || true
+# Sign nested code inside-out. Do not use codesign --deep --identifier on the
+# app: that stamps the app's bundle ID onto Sparkle's XPC services and breaks
+# the installer. SwiftPM linker-signs the menubar binary without binding
+# Info.plist; the bundle-level sign binds it so UserNotifications sees
+# CFBundleIdentifier.
+sign_adhoc() { codesign --force --sign - "$@"; }
+SPARKLE_FW="${FRAMEWORKS_DIR}/Sparkle.framework"
+SPARKLE_B="${SPARKLE_FW}/Versions/B"
+if [[ -d "$SPARKLE_FW" ]]; then
+  if [[ -d "${SPARKLE_B}/XPCServices" ]]; then
+    while IFS= read -r nested; do
+      [[ -n "$nested" ]] && sign_adhoc "$nested"
+    done < <(find "${SPARKLE_B}/XPCServices" -depth \( -name '*.xpc' -o -name '*.app' \) | sort)
+  fi
+  [[ -e "${SPARKLE_B}/Autoupdate" ]] && sign_adhoc "${SPARKLE_B}/Autoupdate"
+  [[ -d "${SPARKLE_B}/Updater.app" ]] && sign_adhoc "${SPARKLE_B}/Updater.app"
+  sign_adhoc "$SPARKLE_FW"
 fi
 if [[ -f "${MACOS_DIR}/ultragateway" ]]; then
-  codesign --force --sign - --identifier "com.ultragateway.em.launcher" "${MACOS_DIR}/ultragateway" >/dev/null 2>&1 || true
+  sign_adhoc --identifier "com.ultragateway.em.launcher" "${MACOS_DIR}/ultragateway"
 fi
-codesign --force --sign - --identifier "com.ultragateway.em" "${MACOS_DIR}/ultragateway-menubar" >/dev/null
-codesign --force --deep --sign - --identifier "com.ultragateway.em" "${APP_BUNDLE}" >/dev/null
-codesign -dv --verbose=2 "${APP_BUNDLE}" 2>&1 | grep -E 'Identifier=|Info\.plist|Signature=' || true
+sign_adhoc --identifier "com.ultragateway.em" "${MACOS_DIR}/ultragateway-menubar"
+sign_adhoc --identifier "com.ultragateway.em" "${APP_BUNDLE}"
+codesign --verify --deep --strict --verbose=2 "${APP_BUNDLE}"
 
 info "Menu bar app ready. Re-run install.sh to copy to /Applications."

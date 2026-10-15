@@ -28,12 +28,14 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/embeputer/ultragateway/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>uKo4s06A4def2agVqOSS6uZgvQqa0/RPZxRuU5COt2w=</string>
+	<string>Xr1oeMrZYRcQldIwJqLt6/gc+vIiS82a+x76ZVzK8Ow=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>21600</integer>
 </dict>
