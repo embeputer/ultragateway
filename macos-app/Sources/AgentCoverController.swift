@@ -163,19 +163,26 @@ final class AgentCoverController: ObservableObject {
         disarmEventTap()
         armedAt = Date()
 
-        let mask =
-            (1 << CGEventType.keyDown.rawValue)
-            | (1 << CGEventType.flagsChanged.rawValue)
-            | (1 << CGEventType.leftMouseDown.rawValue)
-            | (1 << CGEventType.rightMouseDown.rawValue)
-            | (1 << CGEventType.otherMouseDown.rawValue)
-            | (1 << CGEventType.scrollWheel.rawValue)
-            | (1 << CGEventType.mouseMoved.rawValue)
-            | (1 << CGEventType.leftMouseDragged.rawValue)
-            | (1 << CGEventType.rightMouseDragged.rawValue)
-            | (1 << CGEventType.otherMouseDragged.rawValue)
-            | (1 << CGEventType.tabletPointer.rawValue)
-            | (1 << CGEventType.tabletProximity.rawValue)
+        // Built bit by bit. One long chain of `<<` and `|` on CGEventType.rawValue
+        // blows the release type-checker time limit on Xcode 16.
+        let eventTypes: [CGEventType] = [
+            .keyDown,
+            .flagsChanged,
+            .leftMouseDown,
+            .rightMouseDown,
+            .otherMouseDown,
+            .scrollWheel,
+            .mouseMoved,
+            .leftMouseDragged,
+            .rightMouseDragged,
+            .otherMouseDragged,
+            .tabletPointer,
+            .tabletProximity,
+        ]
+        var mask: CGEventMask = 0
+        for eventType in eventTypes {
+            mask |= CGEventMask(1) << CGEventMask(eventType.rawValue)
+        }
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
