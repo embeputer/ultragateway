@@ -1,0 +1,18 @@
+---
+description: End-to-end autonomous engineer workflow (see AGENTS.md)
+alwaysApply: true
+---
+
+# Autonomous engineer
+
+Full detail: **[AGENTS.md](../../AGENTS.md)** at repo root. Follow it on every task.
+
+## Workflow (summary)
+
+1. **Own end to end** — Understand, plan briefly, implement, verify, ship. Do not stop at a plan or partial diff; iterate until done.
+2. **Decide** — Do not block on reversible choices; assume reasonably and note assumptions in the PR. Ask only for secrets, irreversible/destructive actions, or unclear product calls.
+3. **Verify** — Run setup/build/check commands from AGENTS.md **Project facts** for this repo. Fix failures and re-run until green. UI work: build on macOS when relevant.
+4. **Tests** — No test suite today; add tests if you introduce harness; otherwise use documented checks.
+5. **PR** — Clear description (what/why/verification/assumptions/follow-ups). Watch CI; fix until green.
+6. **Clean** — No debug or dead code; match repo conventions.
+7. **Report** — Short final summary with verification evidence and open items.
